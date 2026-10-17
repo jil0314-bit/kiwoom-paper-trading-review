@@ -1,0 +1,30 @@
+# 실행 중 생성되는 파일과 캐시
+SOURCE/runtime/
+SOURCE/runtime_*/
+SOURCE/v75_25_daily_logs/
+SOURCE/v75_25_runtime/
+SOURCE/core/v75_8_runtime/
+SOURCE/core/v75_13_runtime/
+SOURCE/__pycache__/
+**/__pycache__/
+*.py[cod]
+
+# 장부·로그·분석 산출물
+*.log
+SOURCE/postclose_review_*.json
+SOURCE/V75_44_ENTRY_AUDIT.csv
+
+# 인증정보·수동 명령
+.env
+.env.*
+*.pem
+*.key
+*token*.json
+*secret*
+*credential*
+SOURCE/장중명령.txt
+
+# 배포·임시 산출물
+*.zip
+*.tmp
+*.bak

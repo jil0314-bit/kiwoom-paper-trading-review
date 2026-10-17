@@ -1,0 +1,33 @@
+{
+  "version": "V75.80",
+  "bar_minutes": 3,
+  "cases": [
+    {"id": 1, "name": "위메이드맥스", "branch": "하락압축확인형", "expected": "거래바닥·짧은봉·5봉선회복 뒤 진입"},
+    {"id": 2, "name": "매드업", "branch": "투매재시험형", "expected": "개장투매 직후 금지, 봉폭축소 뒤 후보"},
+    {"id": 3, "name": "HLB펩", "branch": "투매재시험형", "expected": "두번째 투매 뒤 추가저가 실패·압축 확인"},
+    {"id": 4, "name": "HLB파나진", "branch": "하락압축확인형", "expected": "거래바닥 지지에서 후보, 대량돌파 추격금지"},
+    {"id": 5, "name": "STX그린로지스", "branch": "장초반상대거래바닥", "expected": "절대량 아닌 파동내 상대바닥·재유입 확인"},
+    {"id": 6, "name": "금호타이어", "branch": "파동별반복압축", "expected": "각 하락파동 기준 재설정·5봉선평탄"},
+    {"id": 7, "name": "이오테크닉스", "branch": "압축·재가속·재시험", "expected": "세 형태를 분리하고 목표공간 검사"},
+    {"id": 8, "name": "다스코", "branch": "국면필터", "expected": "횡보중 대량음봉 제외, 실제하락중만 관심"},
+    {"id": 9, "name": "HLB이노베이션", "branch": "선제분할", "expected": "짧은양봉 선제1차·저점방어 2차"},
+    {"id": 10, "name": "마키나락스", "branch": "조기오진차단", "expected": "양봉수 대신 봉압축·저점·5봉선 하드게이트"},
+    {"id": 11, "name": "코세스", "branch": "반복매물방출", "expected": "대량음봉은 관심 시작, 소진확인 뒤 진입"},
+    {"id": 12, "name": "남화토건", "branch": "추가투매재설정", "expected": "더큰거래·신저가 발생 시 이전신호 폐기"},
+    {"id": 13, "name": "HLB바이오스텝", "branch": "대표선제형", "expected": "대량음봉군→아래꼬리→짧은거래바닥 즉시진입"},
+    {"id": 14, "name": "RF머트리얼즈", "branch": "호가공백반등차단", "expected": "극저거래 긴반등은 매수금지"},
+    {"id": 15, "name": "제이에스링크", "branch": "상단매물·시장충격", "expected": "목표전 층층매물은 비중축소/차단, -5% 손절·당일재진입금지"},
+    {"id": 16, "name": "삼익제약", "branch": "관찰후저점재확인", "expected": "09:39 거래바닥은 관찰, 09:48 저점과 09:54 미이탈 지지에서 강한 후보"}
+  ],
+  "reviewed_sources": {
+    "charts": ["image(67).png", "image(71).png", "image(72).png", "image(73).png", "image(74).png", "image(75).png", "image(76).png", "image(77).png", "image(78).png", "image(79).png", "image(80).png", "image(81).png", "image(82).png", "image(83).png", "image(84).png", "image(85).png", "image(86).png"],
+    "spreadsheets": ["삼익제약.xls", "위메이드맥스.xls", "매드업.xls", "HLB펩.xls", "HLB파나진.xls", "STX그린로지스.xls", "금호타이어.xls", "이오테크닉스.xls", "다스코.xls", "HLB이노베이션.xls", "마키나락스.xls", "코세스(1).xls", "남화토건.xls", "HLB바이오스텝.xls", "RF머트리얼즈.xls", "제이에스링크.xls"]
+  },
+  "order_contract": {
+    "take_profit_pct": 0.015,
+    "hard_stop_pct": 0.05,
+    "target_after_fill": "immediate",
+    "target_quantity": "actual held quantity",
+    "reentry_after_stop": "next KST day"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "policy": {
+    "mode": "append_or_supersede_only",
+    "rule": "사용자의 명시적 수정·삭제 요청 없이는 active 요구사항을 제거하거나 약화하지 않는다.",
+    "supersede_rule": "새 요청이 기존 요청을 수정하면 기존 항목은 superseded로 남기고 새 항목과 연결한다."
+  },
+  "requirements": [
+    {"id":"CORE-PAPER","status":"active","text":"PAPER 모의투자 전용"},
+    {"id":"CORE-LINK","status":"active","text":"종목 행 한 번 클릭과 화살표 이동으로 영웅문 차트 연동"},
+    {"id":"CORE-TP","status":"active","text":"매수 체결 직후 +1.5% 목표매도 주문 등록"},
+    {"id":"CORE-SL","status":"active","text":"고정 -5% 손절 정책"},
+    {"id":"CORE-NO-DOUBLE","status":"active","text":"같은 종목·시점의 중복주문 차단"},
+    {"id":"PATTERN-REVERSAL-FLOOR","status":"active","text":"명백한 하락조정 뒤 음봉 매물출회·거래바닥·짧은봉·아래꼬리·지지·5선 안정 매매를 독립 실행"},
+    {"id":"PATTERN-RISE-PULLBACK","status":"active","text":"거래가 동반된 상승 뒤 첫 조정과 매물흡수 매매를 독립 실행"},
+    {"id":"PATTERN-BREAKOUT","status":"active","text":"거래폭발 전고점 돌파 뒤 중심선·돌파선 방어와 최소거래 첫 눌림 매매를 독립 실행"},
+    {"id":"PATTERN-INDEPENDENT","status":"active","text":"세 패턴 중 최고점 하나만 고르지 않고 각각 독립 편입·판단·매수하며 주문만 중복 차단"},
+    {"id":"TIMEFRAME-1M-3M","status":"active","text":"1분봉으로 형성 중인 3분봉을 선제 판단하고 3분봉 완성만 기다리지 않음"},
+    {"id":"STAGE-MERGE","status":"active","text":"매수후보와 매수직전은 사용자 화면에서 하나의 단계로 통합"},
+    {"id":"STAGE-DEPARTURE","status":"active","text":"모든 단계 이탈행을 당일 해당 카테고리 하단에 구분 보존하고 이탈시각·이유 표시"},
+    {"id":"STAGE-DETAIL","status":"active","text":"단계별 의미·편입근거·충족/부족조건·패턴경로·거래량·봉·이평·지지저항·다음단계·제외조건·위험을 상세 설명"},
+    {"id":"GUI-LATEST-FIRST","status":"active","text":"활성 종목은 최신 편입시각이 위, 이탈 종목은 단계 하단"},
+    {"id":"GUI-SCROLL","status":"active","text":"활성목록·요청이력·장세분석에 가로·세로 스크롤 제공"},
+    {"id":"COMMAND-FREE-TEXT","status":"active","text":"자유로운 형 의견명령을 해석·미리보기·적용·활성등록·시간순 이력으로 연결"},
+    {"id":"COMMAND-STOCK","status":"active","text":"명령으로 종목 편입·제외·즉시매수·지정가격 매수/대기 가능"},
+    {"id":"COMMAND-RESULT","status":"active","text":"명령의 실제 체결가격과 이후 실시간 손익 표시"},
+    {"id":"MARKET-ANALYST","status":"active","text":"기존 로직요약 대신 지수·상하락종목·프로그램·외국인 선물/주식선물·삼성전자/하이닉스·콜풋·테마 장세분석 표시"},
+    {"id":"MARKET-CADENCE","status":"active","text":"장세분석은 10분마다 갱신하고 30분마다 상세 분석 이력을 남김"},
+    {"id":"DATA-NO-FABRICATION","status":"active","text":"실제 데이터가 없는 항목은 추측하지 않고 조회 불가로 표시"},
+    {"id":"REFRESH-FAST","status":"active","text":"후보검색과 단계판단은 장중 느슨한 5분 배치가 아니라 지속적 준실시간으로 수행"},
+    {"id":"OBS-MULTI-ADMISSION","status":"active","text":"관찰 편입은 독립 OR 포착경로로 수행: ①1분 거래량 2만주 이상+전일 동시간 대비 200% 이상 ②직전 1분 종가 대비 현재 1분 종가 +1.5% 이상 ③1분 연속 양봉 ④직전 1분봉 대비 현재 1분봉 거래량 200% 이상 ⑤전일 일봉 거래량 대비 당일 누적거래량 200% 이상 ⑥직전 10일 일평균 거래량 대비 당일 누적거래량 200% 이상. 단 09:30 이후에는 당일 누적거래량 10만주 이상 AND 누적거래대금 10억원 이상을 모든 자동편입 경로에 공통 적용한다. 08:00~09:29에는 이 누적량·대금 공통 하한을 면제한다. 관찰 편입만으로 매수하지 않고 기존 독립 3패턴의 진입조건과 주문·위험 게이트를 통과해야 매수한다."},
+    {"id":"RELEASE-GATE","status":"active","text":"요구사항·연동·매매·주문·명령·GUI 전체 회귀 통과 전 실행 ZIP 배포 금지"}
+  ]
+}
