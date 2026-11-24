@@ -1,0 +1,24 @@
+{
+  "build": "CHART-SUMMARY-20261125",
+  "tests": {
+    "run": 79,
+    "passed": 79
+  },
+  "files": {
+    "SOURCE/core/bot_v76_00_three_stage_ctrlv_paper.py": {
+      "before": "84222eb9946c0e5f5c42a21bc45f06705c95cbc45a54f7a02583c4be41693e68",
+      "after": "6a2c2049624f17c4adafa49da67bffc1f9fb5c87a01dde4f997d5a6519c7b5ee"
+    },
+    "SOURCE/core/v7614_chart_panel.py": {
+      "before": "a64fd36e13e64c1e8444d53b95ce7ebfd58368ebced2f4d7be283fd85e109358",
+      "after": "d2e4f801d9ee283e5a4082c24d30ad23a74da3815338d86066c8ef200c064644"
+    },
+    "tests/test_chart_summary.py": {
+      "before": null,
+      "after": "b10761717efea024ab277f14404b994d520045f20c4a068de5156af0bae66f29"
+    }
+  },
+  "scope": "Read-only engine-cache header: change percent, cumulative shares, percent of previous full trading-day volume. Width 54% to 62.1%. No trading/stop/carry/Kiwoom changes.",
+  "limitations": "Missing cache data is unknown. Quotes older than 30 seconds are labeled delayed. Live UI/restart and Kiwoom interaction not verified.",
+  "review": "Modified current production sources and regression test accompany the patch. Review snapshot, not a complete standalone distribution; apply only against matching before hashes."
+}
