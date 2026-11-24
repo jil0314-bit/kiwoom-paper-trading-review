@@ -1,0 +1,58 @@
+--- a/SOURCE/core/v7595_r21_hwpx_logic.py
++++ b/SOURCE/core/v7595_r21_hwpx_logic.py
+@@ -20,9 +20,9 @@
+ OBS_ONE_MINUTE_RETURN = 0.015
+ OBS_ONE_MINUTE_VOLUME_RATIO = 2.00
+ OBS_SESSION_RISE = 0.05
+-# V7611: 오늘 이미 '저점 대비 15봉 내 +5%' 상승을 한 종목은 지금 조정 중이어도 관찰로 인정.
+-# (그 1분을 스캔이 놓치면 관심이 하루 종일 막히던 문제. 11/05 1시간 관심차단 48건)
+-OBS_ALLOW_PRIOR_WAVE = True
++# 신규 관찰 편입은 현재 완성봉의 15봉 내 첫 +5% / 눌림 후 +3% 조건을 요구한다.
++# 과거 상승 이력만으로 새로 편입하지 않는다. 기존 편입 상태의 유지는 엔진이 담당한다.
++OBS_ALLOW_PRIOR_WAVE = False
+ MORNING_LIQUIDITY_VOLUME = 200_000
+ MORNING_LIQUIDITY_VALUE = 3_000_000_000.0
+ EARLY_TURNOVER_VALUE = 5_000_000_000.0
+--- a/SOURCE/core/bot_v76_00_three_stage_ctrlv_paper.py
++++ b/SOURCE/core/bot_v76_00_three_stage_ctrlv_paper.py
+@@ -159,7 +159,7 @@
+                          (dt_time(10, 0), 1_000_000_000.0))
+ # V7614 (2026-11-09): 오른쪽 설명판 자리에 0600식 차트. 화면 전용(주문·장부·연동 경로 불변).
+ V7614_TABLE_FONT = ("맑은 고딕", 11)
+-V7614_TABLE_PANE, V7614_CHART_PANE = 55, 45
++V7614_TABLE_PANE, V7614_CHART_PANE = 46, 54
+ _V7614_ENGINE: dict[str, Any] = {}
+ # V7616 (2026-11-09): 우리 패턴 매수 경로에서는 지수 '하락주의(CAUTION)·회복대기(RECOVERY_WAIT)'에 막히지 않는다.
+ # 근거: 11/9 매수신호 17회 중 대부분이 지수 1분 -0.15% 잔흔들림 보류로 무산(지수 일 +1.5% 상승일).
+@@ -3067,7 +3067,7 @@
+                     pass
+ 
+     def _set_main_pane_ratio(root: Any) -> None:
+-        """Use 80% for the stock table and 20% for the readable guide panel."""
++        """Use the configured stock-table/chart ratio; preserve manual sash moves."""
+ 
+         pending = list(root.winfo_children())
+         while pending:
+--- a/tests/test_observation_first_rise.py
++++ b/tests/test_observation_first_rise.py
+@@ -184,6 +184,20 @@
+         call(probe, '005930', [bar(0, close=10500)], START + timedelta(minutes=1))
+         probe._v7588_publish.assert_called_once()
+ 
++        # A past rise must not create a fresh admission during its pullback.
++        pullback = [bar(0, close=10500), bar(1, close=10200)]
++        probe._v7588_phase.clear()
++        probe._v7588_publish.reset_mock()
++        call(probe, '005930', pullback, START + timedelta(minutes=2))
++        probe._v7588_publish.assert_not_called()
++
++        # Tightening new admission must not remove or downgrade existing stages.
++        for stage in ('OBSERVED', 'INTEREST', 'PREBUY', 'MARKET_DEFERRED'):
++            probe._v7588_phase['005930'] = stage
++            call(probe, '005930', pullback, START + timedelta(minutes=2))
++            self.assertEqual(probe._v7588_phase['005930'], stage)
++        probe._v7588_publish.assert_not_called()
++
+ 
+ if __name__ == '__main__':
+     unittest.main(verbosity=2)
