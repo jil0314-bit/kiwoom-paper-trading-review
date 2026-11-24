@@ -30,7 +30,7 @@ import subprocess
 import sys
 import threading
 import time
-from types import ModuleType, SimpleNamespace
+from types import FunctionType, ModuleType, SimpleNamespace
 from typing import Any
 from v7609_account_guard import allowed_account, selected_account_matches
 import v7609_exit_policy as _EXIT_POLICY
@@ -425,6 +425,42 @@ _PARENT_ENGINE = parent.V7595CompleteLockedEngine
 _R21_LINK_CLASS = v57.RestoredHeroLink
 _V7594_EVALUATE_OBSERVATION = parent.parent.evaluate_observation_admission
 _V7609_INHERITED_CLIENT = _V753.KiwoomRestClient
+
+
+def _v7633_install_paper_restore() -> None:
+    """Allow the persisted no-stop sentinel only inside PAPER restoration.
+
+    Keep the hash-locked parent and its normal price validation untouched.
+    In the parent's loader, the only downward alignment is stop_price;
+    target_price still uses the original strictly-positive validation.
+    """
+    broker_class = _V753.PaperBroker
+    original = broker_class.load_state
+    if getattr(original, "_v7633_zero_stop_restore", False):
+        return
+
+    def load_state(broker: Any) -> None:
+        namespace = dict(original.__globals__)
+        align = namespace["align_stock_price"]
+
+        def restore_price(price: float, *, upward: bool) -> float:
+            if not upward and price == 0.0:
+                return 0.0  # persisted automatic-stop-disabled sentinel
+            return align(price, upward=upward)
+
+        namespace["align_stock_price"] = restore_price
+        loader = FunctionType(original.__code__, namespace, original.__name__,
+                              original.__defaults__, original.__closure__)
+        loader(broker)
+        if broker.state_load_failed:
+            # Do not let the running engine overwrite a failed/partial restore.
+            raise _V753.ConfigurationError("PAPER 보유 복원 실패: 실행 중단, 원본 상태 보존")
+
+    load_state._v7633_zero_stop_restore = True
+    broker_class.load_state = load_state
+
+
+_v7633_install_paper_restore()
 
 
 class V7609OneMinuteKiwoomClient(_V7609_INHERITED_CLIENT):

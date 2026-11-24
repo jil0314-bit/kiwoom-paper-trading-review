@@ -1,6 +1,6 @@
 {
   "version": "V76.09-FOREGROUND-APP-ACTIVATE-0600-LINK-PAPER",
-  "built_at": "2026-09-25",
+  "built_at": "2026-11-24 PAPER-CARRY-RESTORE-001 review patch",
   "files": {
     "00_READ_FIRST_V76.md": "a4b0e16dc878862e9d4ed8dae21e7d7026b40801c74403e24a08f3dc04951e91",
     "3_START_V76_GUI.vbs": "bc6fa6922834d8978dd764c25b2620bec5628aad3a7d66cd92174608597eb258",
@@ -80,7 +80,7 @@
     "SOURCE/core/bot_v75_94_multi_admission_paper.py": "f05494490f81701f917ecfaa71e0945ff5b0cd17db685980657bbe3b16fdc982",
     "SOURCE/core/bot_v75_95_complete_locked_paper.py": "b93a206659308070b28b2dc4b539cd7b199054efcbef52731b924f8f43b4fca9",
     "SOURCE/core/bot_v75_9_1_daily_cumulative_volume_log_fix_paper.py": "6a11a73531314539a984343c980b320497a4a554d8b448bfa307eb2449378f0b",
-    "SOURCE/core/bot_v76_00_three_stage_ctrlv_paper.py": "27445071647e4416cc75f11be8a035c62aeacd3e5e18e8132a3f5f1831436967",
+    "SOURCE/core/bot_v76_00_three_stage_ctrlv_paper.py": "cf5eee1ec8b8454808e95536fd966de744ef859723258d49a803db78869b15e8",
     "SOURCE/core/v7609_prebuy_rules.py": "b4a83cec230a54cd864629a7e6745612eeccfbcdd6221b9bc2dd33adcf754abc",
     "SOURCE/core/entry_quality_report_v3.py": "24ff4b247051bcc1a31377cf16c493ba8971f5c99cbe6a5580485bb9554ea905",
     "SOURCE/core/entry_quality_tracker.py": "faf7b211feee7060dfcfd4acb78efdb10d46abf9605b78c6b58a7bf7cea8ec8f",
@@ -131,8 +131,10 @@
     "SOURCE/core/v7610_pullback_shadow.py": "8a9ffbf5d0600f8661bdf73534edbcac35e695f842170822598c97875f4175cf",
     "tests/test_v7610_loss_fix.py": "0f7d095be8667a2a51b46a4b8497e6819d45d0b210a32c6e3d02cd95e32fffec",
     "tools/v7610_pullback_shadow_report.py": "555eab27c04452342ab009abe0e9795a2783c0d9260fbce908196c7e4caf6a2e",
-    "tests/test_today_sell_rows.py": "fbd4ff70c1fab61d0ad60b732db3089cb4beefcfb0aa529ef9b04b4ec7d26783"
+    "tests/test_today_sell_rows.py": "fbd4ff70c1fab61d0ad60b732db3089cb4beefcfb0aa529ef9b04b4ec7d26783",
+    "tests/test_paper_carry_restore.py": "15c5600aa5841087371022dafa946ae48c423e30cd10bf6bc590dfefdc8ce510",
+    "PAPER_CARRY_RESTORE_2026-11-24.md": "72fe9d8821a22266c84541e1d4c593011c4b58f1448bb8a67fd832941c8786cf"
   },
-  "change_id": "V7610-REVIEW-20260925",
-  "distribution_note": "AI review export: runtime logs, manual commands, replay data, credentials, backups, and archives excluded. Trading source bytes unchanged."
+  "change_id": "PAPER-CARRY-RESTORE-001",
+  "distribution_note": "Narrow restore adapter on existing public review baseline. Runtime data, credentials, private recovery backups and unrelated production changes excluded."
 }
