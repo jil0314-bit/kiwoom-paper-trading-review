@@ -28,6 +28,11 @@ paths are unchanged. It installs before engine construction and is idempotent.
 - Existing production classes and functions are AST-identical to their prior
   versions; only the installer, its call, and the FunctionType import were added.
 - Production syntax/import and all 148 manifest entries verified successfully.
+- Live PAPER relaunch reached the dashboard and emitted restoration events for
+  all missing holdings. Existing reserved-target exits subsequently executed for
+  qualifying holdings; the remaining carry position stayed open. No zero-stop
+  restoration error occurred in this new session. The user confirmed the window
+  opened. This is runtime/log evidence, not independent visual chart-link proof.
 
 The public repository is an older review snapshot, not a copy of the current
 operating directory. Only this adapter and synthetic regression tests are

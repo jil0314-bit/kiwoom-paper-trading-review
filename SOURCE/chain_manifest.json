@@ -133,7 +133,7 @@
     "tools/v7610_pullback_shadow_report.py": "555eab27c04452342ab009abe0e9795a2783c0d9260fbce908196c7e4caf6a2e",
     "tests/test_today_sell_rows.py": "fbd4ff70c1fab61d0ad60b732db3089cb4beefcfb0aa529ef9b04b4ec7d26783",
     "tests/test_paper_carry_restore.py": "15c5600aa5841087371022dafa946ae48c423e30cd10bf6bc590dfefdc8ce510",
-    "PAPER_CARRY_RESTORE_2026-11-24.md": "72fe9d8821a22266c84541e1d4c593011c4b58f1448bb8a67fd832941c8786cf"
+    "PAPER_CARRY_RESTORE_2026-11-24.md": "99e4c33d04eb11514728e900b91c0e8287b68f4c43d17725c7de594ae6daaa82"
   },
   "change_id": "PAPER-CARRY-RESTORE-001",
   "distribution_note": "Narrow restore adapter on existing public review baseline. Runtime data, credentials, private recovery backups and unrelated production changes excluded."
