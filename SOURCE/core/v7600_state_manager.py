@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 import hashlib
 import importlib.util
 import json
+import re
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
@@ -132,8 +133,9 @@ class StateManager:
 
     def _apply(self, request: TransitionRequest, *, fill_authoritative: bool) -> StateEvent:
         symbol = str(request.symbol).zfill(6)
-        if len(symbol) != 6 or not symbol.isdigit():
-            raise TransitionRejected("종목코드는 6자리 숫자여야 합니다")
+        # V7612: 신형 영문혼합 단축코드(예: 0158S0) 허용. 형식: 숫자 시작·숫자 끝·6자리.
+        if not re.fullmatch(r"[0-9][0-9A-Z]{4}[0-9]", symbol):
+            raise TransitionRejected("종목코드 형식 오류(6자리 단축코드)")
         if request.signal_id in self._seen_signal_ids:
             raise TransitionRejected("동일 signal_id 전이는 중복 처리할 수 없습니다")
         if request.new_stage not in _ALLOWED:

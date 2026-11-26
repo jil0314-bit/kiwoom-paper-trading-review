@@ -141,6 +141,16 @@ class AccountTests(unittest.TestCase):
             with patch.object(engine._V7609_INHERITED_CLIENT, 'authenticate', return_value='unit-token'):
                 with self.assertRaises(engine._V753.AuthenticationError): client.authenticate()
 
+    def test_failed_reauthentication_clears_previous_account_proof(self):
+        client = object.__new__(engine.V7609OneMinuteKiwoomClient)
+        client._v7609_verified_token = 'old-test-token'
+        with patch.object(engine, '_V7609_VERIFIED_ACCOUNT', '1234031111'), \
+             patch.object(engine._V7609_INHERITED_CLIENT, 'authenticate', side_effect=ValueError('offline')):
+            with self.assertRaises(ValueError):
+                client.authenticate()
+            self.assertEqual(engine._V7609_VERIFIED_ACCOUNT, '')
+            self.assertEqual(client._v7609_verified_token, '')
+
     def test_live_order_endpoints_are_blocked_before_transport(self):
         client = object.__new__(engine.V7609OneMinuteKiwoomClient)
         with patch.object(engine._V7609_INHERITED_CLIENT, '_json_post') as transport:

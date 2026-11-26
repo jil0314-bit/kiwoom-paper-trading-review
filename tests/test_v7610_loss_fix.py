@@ -44,7 +44,8 @@ def entry_probe():
 class EntryPolicyTests(unittest.TestCase):
     def test_window_boundaries_start_inclusive_end_exclusive(self):
         cases = {(7, 59): '', (8, 0): 'NXT', (8, 49): 'NXT', (8, 50): '', (12, 59): '',
-                 (13, 0): '오후', (15, 19): '오후', (15, 20): '', (16, 0): ''}
+                 (13, 0): '오후', (15, 19): '오후', (15, 20): '장후', (16, 0): '장후',
+                 (19, 59): '장후', (20, 0): ''}
         for (hour, minute), expected in cases.items():
             label = policy.blocked_window(DAY.replace(hour=hour, minute=minute))
             self.assertEqual(bool(label), bool(expected), (hour, minute, label))

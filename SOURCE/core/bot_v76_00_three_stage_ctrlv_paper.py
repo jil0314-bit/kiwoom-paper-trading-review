@@ -15,6 +15,7 @@ import ctypes
 from ctypes import wintypes
 from dataclasses import replace
 from datetime import datetime, timedelta
+from datetime import time as dt_time
 from decimal import Decimal
 import csv
 import gc
@@ -30,17 +31,24 @@ import subprocess
 import sys
 import threading
 import time
-from types import ModuleType, SimpleNamespace
+from types import FunctionType, ModuleType, SimpleNamespace
 from typing import Any
 from v7609_account_guard import allowed_account, selected_account_matches
 import v7609_exit_policy as _EXIT_POLICY
 import v7609_prebuy_rules as _PREBUY_RULES
 import v7610_entry_policy as _ENTRY_POLICY
 import v7610_pullback_shadow as _PULLBACK
+import v7612_pattern_rules as _PATTERN12
+import v7613_split_rules as _SPLIT13
+import v7614_chart_panel as _CHART14
+import v7619_conservative_rules as _CONS19
+import v7620_command_rules as _CMD20
+import v7628_close_bet_rules as _CBET28
+import v7628_query_guard as _QUERY_GUARD
 
 
 VERSION = "V76.09-FOREGROUND-APP-ACTIVATE-0600-LINK-PAPER"
-BUILD_STAMP = "2026-09-23 조기매수중단·시간대차단·즉시손절"
+BUILD_STAMP = "2026-11-26 V7633c 분할 1:2:6·추가매수 1% 간격·차수별 수량·금액·화면 정리(합계칸 +15%)"
 V7609_LEGACY_MA5_ONLY_ENTRY = False
 V7609_LEGACY_PRE_MA5_HALF_ENTRY = False
 BASE_DIR = Path(__file__).resolve().parent
@@ -65,6 +73,33 @@ _V7600_STATE = _load_v7600_state_module()
 _VOLUME5 = _V7600_STATE._VOLUME5
 _V7609_VERIFIED_ACCOUNT = ""  # process memory only, never logged or persisted
 EARLY_PATTERN = _VOLUME5.EARLY_RULE_ID
+# V7611 (2026-11-08) 단계 순서 복구: 관찰 -> 관심 -> 매수직전 -> 매수
+# 11/05 실측 1시간: 관찰편입 2 / 5배급등 매수직전 115 / 조기매수 매수직전 160(주문차단 152)
+# / 오늘관찰선행없는 관심차단 48. 5배 급등은 '재료 확인=관찰' 신호로만 쓴다.
+# 되돌리려면 False 로 바꾸면 이전 동작(매수직전 직행)으로 복귀한다.
+V7611_VOLUME5_AS_OBSERVATION = True
+
+# V7612 (2026-11-08) 종목 누락 수정
+# 11/06 로그: 숫자6자리 코드 899개 / 영문혼합 코드 0개, 삼성전자우(우선주) 0건.
+#  - 신형 영문혼합 단축코드(예: 엘리스 0158S0)를 수집·단계·체결복원까지 허용
+#  - 이름이 '우/우B/우C'로 끝나는 우선주를 후보에서 빼던 규칙 해제
+# 해시 잠금 체인(v75_64~v75_95) 파일은 고치지 않고, 실행 시점에 해당 함수만 갈아끼운다.
+V7612_ALLOW_ALNUM_CODES = True
+V7612_ALLOW_PREFERRED = True
+V7612_CODE_PATTERN = r"[0-9][0-9A-Z]{4}[0-9]"
+V7612_PATCH_STATUS: dict[str, str] = {}
+
+
+def _v7612_is_code(value: Any) -> bool:
+    text = str(value or "").strip().upper()
+    if V7612_ALLOW_ALNUM_CODES:
+        return re.fullmatch(V7612_CODE_PATTERN, text) is not None
+    return re.fullmatch(r"\d{6}", text) is not None
+
+
+def _v7612_allow_preferred() -> bool:
+    return bool(V7612_ALLOW_PREFERRED)
+
 
 
 def _load_v7600_order_module() -> ModuleType:
@@ -83,9 +118,55 @@ def _load_v7600_order_module() -> ModuleType:
 _V7600_ORDER = _load_v7600_order_module()
 PATTERN = "V76_코난거래바닥2단계"
 BREAKOUT_PATTERN = "V76_코난돌파눌림확인"
+# V7612 형 지정 참고패턴 (규칙: v7612_pattern_rules.py)
+TAIL_PATTERN = "V76_투매소화꼬리반전"
+CARRY_PATTERN = "V76_전일거래바닥이월"
+V7612_ROUTE_SLOT = {"BREAKOUT": 9, _PATTERN12.ROUTE_TAIL: 7, _PATTERN12.ROUTE_CARRY: 8,
+                    "PULLBACK": 10}   # V7622 상승 눌림목: 주문 패턴은 기본(PATTERN)·분할매수 관리 그대로
+V7612_SLOT_PATTERN = {9: BREAKOUT_PATTERN, 7: TAIL_PATTERN, 8: CARRY_PATTERN}
+V7612_RELATIVE_STRENGTH_ROUTES = {"BOTTOM_MA5", _PATTERN12.ROUTE_TAIL, _PATTERN12.ROUTE_CARRY}
 TRANCHE_NOTIONAL = 10_000_000.0 / 2.0
 V7609_FIXED_STOP_LOSS_PCT = 0.015
 V7609_TAKE_PROFIT_PCT = 0.02
+# V7613 (2026-11-08 형 지시, 11-10 금액 변경, 11-25 V7633 1:2:6): 1차 100만 → 패턴 재출현 시 2차 200만 → 3차 600만.
+# 규칙·근거: v7613_split_rules.py. 관리 대상은 이 버전 이후 새로 산 자동매수 종목만이다.
+V7613_SPLIT_PATTERNS = {PATTERN, BREAKOUT_PATTERN, TAIL_PATTERN, CARRY_PATTERN}
+V7613_STATE_FILE = BASE_DIR.parent / "runtime_v7592" / "v7613_split_positions.json"
+V7613_VIEW_FILE = BASE_DIR.parent / "runtime_v7592" / "v7613_split_view.json"
+# V7620 형 지시(보유 종목 목표 %·이월, 오늘 장 약함) — 재시작에도 유지되는 원장
+V7620_OVERRIDE_FILE = BASE_DIR.parent / "runtime_v7592" / "v7620_user_overrides.json"
+# V7626 (2026-11-12): 그날 매수직전·보유까지 간 종목의 1분봉을 15:21부터 한 종목씩 받아 저장(재현 분석용).
+V7626_BAR_DIR = BASE_DIR.parent / "runtime_v7592" / "minute_bars"
+V7626_SAVE_FROM = dt_time(15, 21)
+# V7628 (2026-11-15 형 지시): 일봉 종가배팅 진행 상태(그날 검색·매수 완료 여부, 재시작해도 중복 매수 안 함)
+V7628_STATE_FILE = BASE_DIR.parent / "runtime_v7592" / "v7628_close_bet.json"
+# V7630 (2026-11-17 형 지시): 모의투자에서는 15:19 장마감 정리를 하지 않고 보유를 다음날로 넘긴다.
+V7630_EOD_CLOSE = False
+# 2026-11-21 형 지정 모의 실험: 모든 자동 가격손절을 끈다. 익절·수동매도는 유지.
+V7632_PAPER_AUTO_STOP = False
+# V7630b (형 지시): 이월한 보유는 운용한도에서 뺀다 → 매일 새로 5,000만까지 매입(모의투자 전용 스위치.
+# 실전에서는 False로 두면 예전처럼 보유 전체가 한도에 들어간다).
+V7630_CARRY_OUTSIDE_BUDGET = True
+# V7621 (2026-11-11 형 지시): 최근 3거래일 +50% 이상 급등 종목은 자동 신규매수 제외(수동 매수는 그대로).
+# 예) NHN 11/05 51,100 → 11/10 77,400 (+51.5%). 하루 10~20%씩 흔들려 1:3:9 물타기와 맞지 않는다.
+V7621_HOT_DAYS = 3
+V7621_HOT_GAIN = 0.50
+# V7625 (2026-11-12 형 지시): 거래가 너무 적은 종목은 새로 잡지도, 자동매수하지도 않는다.
+# 주식 수가 아니라 '오늘 누적 거래대금'으로 본다(1,000원짜리 10만주=1억, 50만원짜리 10만주=500억).
+# (시작 시각, 최소 누적 거래대금) — 10시 전에는 적용하지 않는다.
+# 재현 212건: 누적 30억 미만 31건 건당 +0.8만 · 100억 이상 121건 건당 +2.0만
+V7625_MIN_VALUE_STEPS = ((dt_time(13, 0), 3_000_000_000.0), (dt_time(12, 0), 2_000_000_000.0),
+                         (dt_time(10, 0), 1_000_000_000.0))
+# V7614 (2026-11-09): 오른쪽 설명판 자리에 0600식 차트. 화면 전용(주문·장부·연동 경로 불변).
+V7614_TABLE_FONT = ("맑은 고딕", 11)
+V7614_TABLE_PANE, V7614_CHART_PANE = 379, 621  # 37.9% / 62.1%; chart width +15%
+_V7614_ENGINE: dict[str, Any] = {}
+# V7616 (2026-11-09): 우리 패턴 매수 경로에서는 지수 '하락주의(CAUTION)·회복대기(RECOVERY_WAIT)'에 막히지 않는다.
+# 근거: 11/9 매수신호 17회 중 대부분이 지수 1분 -0.15% 잔흔들림 보류로 무산(지수 일 +1.5% 상승일).
+# 재현(바닥매수, 1:3:9): 안정 154건 건당 +4.3만 / 회복대기 44건 +7.9만 / 하락주의 7건 +13.2만.
+# 급락(SHOCK)·지수자료오류(DATA_HALT)는 계속 막는다.
+V7616_RELAXED_MARKET_STATES = ("CAUTION", "RECOVERY_WAIT")
+_V7616_CONTEXT = threading.local()
 # Scanner polling cannot deliver every symbol's newest completed bar inside the
 # same minute.  Orders still require the immediately preceding minute; only the
 # 관찰/관심 display stages may be judged on a completed bar this many minutes old.
@@ -222,6 +303,124 @@ def _v7609_open_stage_history(root: Any) -> None:
 
     ttk.Button(controls, text="조회/새로고침", command=refresh).pack(side="left", padx=8)
     tree.bind("<<TreeviewSelect>>", select)
+    refresh()
+
+
+def _v7613_open_split_window(root: Any) -> None:
+    """V7613 분할매수 현황 — 1차/2차/3차/오늘결과 탭. 읽기 전용(주문·차트연동 없음)."""
+    import tkinter as tk
+    from tkinter import ttk
+
+    existing = getattr(root, "_v7613_split_window", None)
+    try:
+        if existing is not None and existing.winfo_exists():
+            existing.deiconify()
+            existing.lift()
+            existing.focus_force()
+            return
+    except Exception:
+        pass
+    window = tk.Toplevel(root)
+    root._v7613_split_window = window
+    window.title("분할매수 현황 (1차·2차·3차) — 읽기 전용")
+    window.geometry("1180x600")
+    header = tk.StringVar(value="불러오는 중…")
+    ttk.Label(window, textvariable=header).pack(fill="x", padx=8, pady=(8, 2))
+    plan = tk.StringVar(value="")
+    ttk.Label(window, textvariable=plan, foreground="#1f4f8a").pack(fill="x", padx=8, pady=(0, 4))
+    notebook = ttk.Notebook(window)
+    notebook.pack(fill="both", expand=True, padx=8, pady=4)
+    hold_columns = ("name", "symbol", "qty", "avg", "current", "pnl", "pnl_pct", "target", "stop", "next", "watch", "fills")
+    hold_titles = ("종목명", "코드", "보유수량", "평단", "현재가", "평가손익", "수익률", "매도목표", "손절가", "다음매수금액", "다음 매수조건 진행", "체결내역")
+    hold_widths = (120, 70, 70, 80, 80, 90, 70, 80, 80, 95, 200, 420)
+    trees: dict[int, Any] = {}
+    tab_titles: dict[int, Any] = {}
+    for tranche in (1, 2, 3):
+        frame = ttk.Frame(notebook)
+        notebook.add(frame, text=f"{tranche}차매수 0")
+        tab_titles[tranche] = frame
+        tree = ttk.Treeview(frame, columns=hold_columns, show="headings", selectmode="browse")
+        for column, title, width in zip(hold_columns, hold_titles, hold_widths):
+            tree.heading(column, text=title)
+            tree.column(column, width=width, stretch=column == "fills",
+                        anchor="w" if column in {"name", "watch", "fills"} else "e")
+        scroll = ttk.Scrollbar(frame, orient="horizontal", command=tree.xview)
+        tree.configure(xscrollcommand=scroll.set)
+        scroll.pack(side="bottom", fill="x")
+        tree.pack(fill="both", expand=True)
+        tree.tag_configure("gain", foreground="#c0392b")
+        tree.tag_configure("loss", foreground="#1f5fbf")
+        trees[tranche] = tree
+    closed_frame = ttk.Frame(notebook)
+    notebook.add(closed_frame, text="오늘 분할매매 결과 0")
+    closed_columns = ("name", "symbol", "tranche", "first", "exit", "invested", "pnl", "pnl_pct", "reason")
+    closed_titles = ("종목명", "코드", "최종차수", "1차매수", "청산", "총투입", "손익", "수익률", "청산사유")
+    closed_widths = (120, 70, 70, 80, 80, 110, 100, 70, 380)
+    closed_tree = ttk.Treeview(closed_frame, columns=closed_columns, show="headings", selectmode="browse")
+    for column, title, width in zip(closed_columns, closed_titles, closed_widths):
+        closed_tree.heading(column, text=title)
+        closed_tree.column(column, width=width, stretch=column == "reason",
+                           anchor="w" if column in {"name", "reason"} else "e")
+    closed_tree.tag_configure("gain", foreground="#c0392b")
+    closed_tree.tag_configure("loss", foreground="#1f5fbf")
+    closed_tree.pack(fill="both", expand=True)
+
+    def won(value: Any) -> str:
+        try:
+            return f"{float(value):,.0f}"
+        except (TypeError, ValueError):
+            return "-"
+
+    def refresh() -> None:
+        try:
+            if not window.winfo_exists():
+                return
+        except Exception:
+            return
+        try:
+            view = json.loads(V7613_VIEW_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            view = {}
+        holdings = list(view.get("holdings", []) or [])
+        closed = list(view.get("closed", []) or [])
+        if str(view.get("date", "")) != datetime.now(KST).date().isoformat():
+            closed = []
+        plan.set(str(view.get("plan_text", "")))
+        total_pnl = sum(float(x.get("pnl", 0) or 0) for x in closed)
+        header.set(
+            f"갱신 {view.get('updated', '-')} · 보유 {len(holdings)}종목 · 예수금 {won(view.get('cash'))}원 · "
+            f"실제 매입 {won(view.get('committed'))}원 / 한도 5,000만 · 오늘 분할매매 {len(closed)}건 실현손익 {total_pnl:+,.0f}원"
+        )
+        for tranche, tree in trees.items():
+            tree.delete(*tree.get_children())
+            rows = [x for x in holdings if int(x.get("tranche", 0) or 0) == tranche]
+            for item in rows:
+                fills = " / ".join(
+                    f"{int(f.get('tranche', 0))}차 {str(f.get('time', ''))[11:19]} {won(f.get('price'))}x{int(f.get('quantity', 0) or 0):,}"
+                    for f in item.get("fills", [])
+                )
+                pnl = float(item.get("pnl", 0) or 0)
+                tree.insert("", "end", values=(
+                    item.get("name", ""), item.get("symbol", ""), f"{int(item.get('quantity', 0) or 0):,}",
+                    won(item.get("avg_price")), won(item.get("current_price")), f"{pnl:+,.0f}",
+                    f"{float(item.get('pnl_pct', 0) or 0):+.2f}%", won(item.get("target_price")),
+                    won(item.get("stop_price")),
+                    won(item.get("next_notional")) if float(item.get("next_notional", 0) or 0) > 0 else "완료",
+                    item.get("watch", ""), fills,
+                ), tags=("gain" if pnl > 0 else "loss",))
+            notebook.tab(tab_titles[tranche], text=f"{tranche}차매수 {len(rows)}")
+        closed_tree.delete(*closed_tree.get_children())
+        for item in reversed(closed):
+            pnl = float(item.get("pnl", 0) or 0)
+            closed_tree.insert("", "end", values=(
+                item.get("name", ""), item.get("symbol", ""), f"{int(item.get('tranche', 1))}차",
+                str(item.get("first_time", ""))[11:19], str(item.get("exit_time", ""))[11:19],
+                won(item.get("invested")), f"{pnl:+,.0f}", f"{float(item.get('pnl_pct', 0) or 0):+.2f}%",
+                item.get("reason", ""),
+            ), tags=("gain" if pnl > 0 else "loss",))
+        notebook.tab(closed_frame, text=f"오늘 분할매매 결과 {len(closed)}")
+        window.after(2000, refresh)
+
     refresh()
 
 
@@ -427,6 +626,42 @@ _V7594_EVALUATE_OBSERVATION = parent.parent.evaluate_observation_admission
 _V7609_INHERITED_CLIENT = _V753.KiwoomRestClient
 
 
+def _v7633_install_paper_restore() -> None:
+    """Allow the persisted no-stop sentinel only inside PAPER restoration.
+
+    Keep the hash-locked parent and its normal price validation untouched.
+    In the parent's loader, the only downward alignment is stop_price;
+    target_price still uses the original strictly-positive validation.
+    """
+    broker_class = _V753.PaperBroker
+    original = broker_class.load_state
+    if getattr(original, "_v7633_zero_stop_restore", False):
+        return
+
+    def load_state(broker: Any) -> None:
+        namespace = dict(original.__globals__)
+        align = namespace["align_stock_price"]
+
+        def restore_price(price: float, *, upward: bool) -> float:
+            if not upward and price == 0.0:
+                return 0.0  # persisted automatic-stop-disabled sentinel
+            return align(price, upward=upward)
+
+        namespace["align_stock_price"] = restore_price
+        loader = FunctionType(original.__code__, namespace, original.__name__,
+                              original.__defaults__, original.__closure__)
+        loader(broker)
+        if broker.state_load_failed:
+            # Do not let the running engine overwrite a failed/partial restore.
+            raise _V753.ConfigurationError("PAPER 보유 복원 실패: 실행 중단, 원본 상태 보존")
+
+    load_state._v7633_zero_stop_restore = True
+    broker_class.load_state = load_state
+
+
+_v7633_install_paper_restore()
+
+
 class V7609OneMinuteKiwoomClient(_V7609_INHERITED_CLIENT):
     """Expose raw Kiwoom one-minute OHLCV; never aggregate it to three minutes."""
 
@@ -436,8 +671,11 @@ class V7609OneMinuteKiwoomClient(_V7609_INHERITED_CLIENT):
         return list(getter(self, str(symbol), limit=900, completed_only=False))
 
     def _save_token(self, token: str, expires_dt: str) -> None:
-        # Do not overwrite the shared cross-project credential cache.
-        return None
+        # Track expiry only in memory; do not overwrite another project's cache.
+        try:
+            self._v7628_token_expiry = datetime.strptime(str(expires_dt), "%Y%m%d%H%M%S").replace(tzinfo=KST)
+        except ValueError:
+            self._v7628_token_expiry = None
 
     def _read_cached_token(self) -> str:
         if getattr(self, "_v7609_force_fresh", False):
@@ -446,41 +684,150 @@ class V7609OneMinuteKiwoomClient(_V7609_INHERITED_CLIENT):
 
     def _json_post(self, url: str, body: Any, headers: Any, **kwargs: Any) -> Any:
         from urllib.parse import urlsplit
-        path = urlsplit(url).path
+        path = urlsplit(url).path.rstrip('/').lower()
         api = str(headers.get("api-id", ""))
-        if path.endswith(("/ordr", "/crdordr")) or api in {"kt10000", "kt10001", "kt10002", "kt10003"}:
+        if path.endswith(("/ordr", "/crdordr")) or api.lower() in {"kt10000", "kt10001", "kt10002", "kt10003"}:
             raise _V753.AuthenticationError("PAPER 실행본: 실제 주문 API 차단")
-        return super()._json_post(url, body, headers, **kwargs)
+        token = str(headers.get('authorization', '')).removeprefix('Bearer ').strip()
+        try:
+            data, status, response_headers = self._v7628_transport_obj(token).post_json(url, body, headers)
+        except _QUERY_GUARD.QuerySchemaError as exc:
+            raise _V753.ApiSchemaError(str(exc)) from None
+        except (_QUERY_GUARD.QueryTransportError, OSError) as exc:
+            raise _V753.ApiTransportError(str(exc)) from None
+        self._last_response_headers = response_headers
+        return data, status
+
+    def _v7628_transport_obj(self, token: str = '') -> Any:
+        transport = getattr(self, '_v7628_query_transport', None)
+        if transport is None:
+            credential = str(getattr(self.settings, 'app_key', '') or token or getattr(self, '_token', ''))
+            transport = _QUERY_GUARD.QueryTransport(
+                self.settings.base_url, credential,
+                timeout=getattr(self.settings, 'timeout_sec', 12.0),
+                logger=getattr(self, 'logger', None),
+            )
+            self._v7628_query_transport = transport
+            account = getattr(self, '_v7628_verified_account', '')
+            if account and allowed_account(account):
+                transport.budget.bind_account(account)
+        return transport
+
+    def _v7628_auth_lock(self) -> Any:
+        lock = getattr(self, '_request_lock', None)
+        if lock is None:
+            lock = self._request_lock = threading.RLock()
+        return lock
+
+    def _v7628_clear_auth_proof(self) -> None:
+        global _V7609_VERIFIED_ACCOUNT
+        _V7609_VERIFIED_ACCOUNT = ''
+        self._v7609_verified_token = ''
+        self._v7628_verified_account = ''
 
     def authenticate(self, *, force_refresh: bool = False) -> str:
         global _V7609_VERIFIED_ACCOUNT
-        if force_refresh:
-            self._token = ""
-            self._v7609_verified_token = ""
-            _V7609_VERIFIED_ACCOUNT = ""
-        self._v7609_force_fresh = bool(force_refresh)
+        with self._v7628_auth_lock():
+            expiry = getattr(self, '_v7628_token_expiry', None)
+            refresh = bool(force_refresh or (expiry and datetime.now(KST) >= expiry - timedelta(seconds=30)))
+            for attempt in range(2):
+                if refresh:
+                    self._token = ''
+                    self._v7628_clear_auth_proof()
+                self._v7609_force_fresh = refresh
+                try:
+                    # Parent force_refresh deletes shared caches; never use it.
+                    token = super().authenticate(force_refresh=False)
+                except Exception:
+                    self._v7628_clear_auth_proof()
+                    raise
+                finally:
+                    self._v7609_force_fresh = False
+                if token == getattr(self, '_v7609_verified_token', '') and allowed_account(
+                    getattr(self, '_v7628_verified_account', '')
+                ):
+                    _V7609_VERIFIED_ACCOUNT = self._v7628_verified_account
+                    return token
+                self._v7628_clear_auth_proof()
+                try:
+                    data, status = self._json_post(
+                        self.settings.base_url + '/api/dostk/acnt', {},
+                        {'authorization': 'Bearer ' + token, 'api-id': 'ka00001'},
+                    )
+                    if (status == 200 and self._is_invalid_token_response(
+                            _V753.return_code_of(data), str(data.get('return_msg', '')))
+                            and attempt == 0 and getattr(self.settings, 'app_key', '')
+                            and getattr(self.settings, 'secret_key', '')):
+                        refresh = True
+                        continue
+                    if status != 200:
+                        raise _V753.ApiTransportError('ka00001 계좌 확인 조회 실패 HTTP=' + str(status))
+                    account = str(data.get('acctNo', ''))
+                    if str(data.get('return_code')) != '0' or not allowed_account(account):
+                        raise _V753.AuthenticationError('기본 계좌 끝 0311 불일치/미확인: 연동 차단')
+                    transport = getattr(self, '_v7628_query_transport', None)
+                    if transport is not None:
+                        transport.budget.bind_account(account)
+                except (_QUERY_GUARD.QueryTransportError, OSError) as exc:
+                    self._v7628_clear_auth_proof()
+                    raise _V753.ApiTransportError('계좌 조회 한도 연결 실패: ' + str(exc)) from None
+                except Exception:
+                    self._v7628_clear_auth_proof()
+                    raise
+                self._v7609_verified_token = token
+                self._v7628_verified_account = account
+                _V7609_VERIFIED_ACCOUNT = account
+                return token
+        raise _V753.AuthenticationError('0311 계좌 인증 재확인 실패')
+
+    def _v7628_query(self, *, api_id: str, endpoint: str, body: Any,
+                     required_any: tuple[str, ...], extra_headers: Any = None) -> Any:
+        with self._v7628_auth_lock():
+            for attempt in range(2):
+                token = self.authenticate(force_refresh=(attempt == 1))
+                data, status = self._json_post(self.settings.base_url + endpoint, body, {
+                    'authorization': 'Bearer ' + token, 'api-id': api_id, **dict(extra_headers or {}),
+                })
+                message = str(data.get('return_msg', ''))
+                try:
+                    code = _V753.return_code_of(data)
+                except ValueError:
+                    code = None
+                if status == 200 and self._is_invalid_token_response(code, message) and attempt == 0:
+                    self._token = ''
+                    self._v7628_clear_auth_proof()
+                    continue
+                if status != 200:
+                    raise _V753.ApiTransportError(f'{api_id} HTTP={status} return_code={code} msg={message!r}')
+                if code is None:
+                    raise _V753.ApiSchemaError(f'{api_id} return_code 누락')
+                if code != 0:
+                    if self._is_invalid_token_response(code, message):
+                        self._v7628_clear_auth_proof()
+                        raise _V753.AuthenticationError(f'{api_id} 새 토큰 발급 후 인증 실패')
+                    raise _V753.ApiBusinessError(f'{api_id} API_ERROR return_code={code} msg={message!r}')
+                if not any(key in data for key in required_any):
+                    raise _V753.ApiSchemaError(f'{api_id} SUCCESS_BUT_SCHEMA_ERROR required_any={required_any}')
+                return data
+        raise _V753.AuthenticationError(f'{api_id} 인증 재시도 한도 초과')
+
+    def post(self, *, api_id: str, endpoint: str, body: Any, required_any: tuple[str, ...]) -> Any:
+        return self._v7628_query(api_id=api_id, endpoint=endpoint, body=body, required_any=required_any)
+
+    def _rank_post_page_unlocked(self, api_id: str, body: Any, *, cont_yn: str = '', next_key: str = '') -> Any:
+        headers = {'cont-yn': cont_yn, 'next-key': next_key} if cont_yn and next_key else {}
         try:
-            # Parent force_refresh deletes a shared cache. Never enter that path.
-            token = super().authenticate(force_refresh=False)
-        finally:
-            self._v7609_force_fresh = False
-        if token != getattr(self, "_v7609_verified_token", ""):
-            _V7609_VERIFIED_ACCOUNT = ""
-            try:
-                data, status = self._json_post(
-                    self.settings.base_url + "/api/dostk/acnt", {},
-                    {"authorization": "Bearer " + token, "api-id": "ka00001"},
-                )
-                account = str(data.get("acctNo", ""))
-                valid = status == 200 and str(data.get("return_code")) == "0" and allowed_account(account)
-            except Exception:
-                raise _V753.AuthenticationError("0311 계좌 확인 실패: 연동 차단") from None
-            if not valid:
-                self._v7609_verified_token = ""
-                raise _V753.AuthenticationError("기본 계좌 끝 0311 불일치/미확인: 연동 차단")
-            self._v7609_verified_token = token
-            _V7609_VERIFIED_ACCOUNT = account
-        return token
+            data = self._v7628_query(api_id=api_id, endpoint='/api/dostk/rkinfo', body=body,
+                                       required_any=('return_code',), extra_headers=headers)
+        except _V753.V73Error as exc:
+            _V753.append_api_error(f'{api_id} continuation query failed error={exc}')
+            return None
+        bucket = self.rank_probe_trials[api_id]
+        if len(bucket) < 50:
+            bucket.append({'body': dict(body), 'status': 200, 'code': 0, 'error': '', 'data': data,
+                           'cont_yn': self._last_response_headers.get('cont-yn', ''),
+                           'next_key_present': bool(self._last_response_headers.get('next-key', ''))})
+        return data
 
     def get_minute_bars(
         self,
@@ -510,6 +857,8 @@ V7609_POSTCLOSE_EVENT_FROM = datetime(2026, 8, 7, 8, 0, tzinfo=KST)
 V7609_POSTCLOSE_EVENT_UNTIL = datetime(2026, 8, 7, 15, 30, 59, tzinfo=KST)
 V7609_ENTRY_AUDIT_FILE = BASE_DIR.parent / "V75_44_ENTRY_AUDIT.csv"
 V7609_POSTCLOSE_REVIEW_FILE = BASE_DIR.parent / "postclose_review_20260807.json"
+# V7612 패턴A 다음날 후보 목록(주문 근거 아님: 다음 날 스캔 대상 지정·화면 표시용)
+V7612_CARRY_FILE = BASE_DIR.parent / "runtime" / "v7612_carry_candidates.json"
 
 
 # The command panel remains PAPER-only.  The locked parent already supports
@@ -543,6 +892,10 @@ def _v7609_quantity_from_text(text: str) -> int | None:
 def _v7609_compile_command(text: str, **kwargs: Any) -> Any:
     draft = _V7609_BASE_COMMAND_COMPILER(text, **kwargs)
     raw = " ".join(str(text or "").split())
+    if re.search(r"말고|하지\s*마|마라|마세요|하지\s*말", raw) and re.search(r"팔|매도|매수|사", raw):
+        # V7620: '로직대로 팔지 말고 5%에 팔아'가 즉시 전량매도로 읽히던 문제 차단.
+        draft.action, draft.errors = 'MEMO', ['부정문(…하지 말고)이 섞인 지시는 즉시 주문하지 않습니다. 원하는 행동만 짧게 적어주세요.']
+        return draft
     if re.search(r'내일|모레|나중|이따|다음|이후|뒤에|[0-9]+\s*(?:시|분)\s*(?:에|후|뒤)|예약', raw):
         draft.action, draft.symbol, draft.errors = 'MEMO', '', ['미래·예약 지시는 즉시 주문하지 않습니다.']
         return draft
@@ -629,6 +982,8 @@ def _v7609_command_route(action: str) -> str:
 
 def _v7609_apply_command(self: Any, command: dict[str, Any]) -> str:
     kind = str(command.get("kind", ""))
+    if kind.startswith("V7620_"):
+        return self._v7620_apply(command)
     if kind == "PAUSE_BUY":
         return str(self._execute_command("신규매수중지"))
     if kind not in {"IMMEDIATE_BUY", "IMMEDIATE_SELL"}:
@@ -902,9 +1257,11 @@ _ORIGINAL_INITIAL_NOTIONAL = _V7516._initial_order_notional
 
 
 def _v76_initial_notional(signal: Any) -> float:
+    if _SPLIT13.ENABLED and str(getattr(signal, "pattern", "")) in V7613_SPLIT_PATTERNS:
+        return float(_SPLIT13.FIRST_NOTIONAL)
     if str(getattr(signal, "pattern", "")) in {PATTERN, EARLY_PATTERN}:
         return TRANCHE_NOTIONAL
-    if str(getattr(signal, "pattern", "")) == BREAKOUT_PATTERN:
+    if str(getattr(signal, "pattern", "")) in {BREAKOUT_PATTERN, TAIL_PATTERN, CARRY_PATTERN}:
         return float(_V7516.MAX_SYMBOL_NOTIONAL)
     return float(_ORIGINAL_INITIAL_NOTIONAL(signal))
 
@@ -927,12 +1284,191 @@ class V7600CtrlVHeroLink(_R21_LINK_CLASS):
     CACHE_SECONDS = 14400.0
 
     def _v7609_display_chart_valid(self, chart: int) -> bool:
-        """Display target only; HTS account widgets are not order authority."""
-        return bool(
-            sys.platform == "win32"
-            and allowed_account(_V7609_VERIFIED_ACCOUNT)
-            and self._is_exact_0600_chart(int(chart or 0))
-        )
+        """Require REST identity and selected HTS identity in the chart's PID."""
+        if sys.platform != "win32" or not self._is_exact_0600_chart(int(chart or 0)):
+            reason = "CHART_NOT_VISIBLE_0600"
+        elif not allowed_account(_V7609_VERIFIED_ACCOUNT):
+            reason = "REST_ACCOUNT_UNVERIFIED"
+        else:
+            texts = self._v7609_chart_selected_accounts(int(chart))
+            reason = ("HTS_ACCOUNT_UNREADABLE" if not texts else
+                      "OK" if selected_account_matches(texts, _V7609_VERIFIED_ACCOUNT)
+                      else "HTS_ACCOUNT_MISMATCH_OR_MASKED")
+        # Distinguish account failure from a missing chart, without logging
+        # account numbers, credential values, or a copy of any control text.
+        state = (int(chart or 0), reason)
+        states = getattr(self, "_v7609_identity_states", {})
+        if states.get(state[0]) != reason:
+            if len(states) > 16:
+                states.clear()
+            states[state[0]] = reason
+            self._v7609_identity_states = states
+            v57.diag(f"V7609_0600_IDENTITY chart={state[0]} reason={reason}")
+        self._v7609_link_identity_reason = reason
+        return reason == "OK"
+
+    def _v7609_selected_combo_text(self, control: int) -> str:
+        """Read only the selected standard ComboBox item; never select/expand."""
+        text = self._read_control_text(control).strip()
+        # In particular, never look behind a displayed masked account number.
+        if text or self._win_class(control).casefold() != "combobox":
+            return text
+        try:
+            style = int(ctypes.windll.user32.GetWindowLongW(wintypes.HWND(control), -16))
+            if style & 0x30 and not style & 0x200:  # owner-draw without CBS_HASSTRINGS
+                return ""
+            ok, index, _ = self._send_message(control, 0x0147, timeout_ms=150)
+            if not ok or not 0 <= index <= 10000:
+                return ""
+            ok, length, _ = self._send_message(control, 0x0149, index, timeout_ms=150)
+            if not ok or not 0 < length <= 511:
+                return ""
+            buffer = ctypes.create_unicode_buffer(4096)
+            ok, copied, _ = self._send_message(
+                control, 0x0148, index,
+                ctypes.cast(buffer, ctypes.c_void_p).value or 0, timeout_ms=150,
+            )
+            stable, after, _ = self._send_message(control, 0x0147, timeout_ms=150)
+            if not ok or not stable or after != index or not 0 < copied <= 511:
+                return ""
+            # Account changes and masking during the read must not be ignored.
+            current = self._read_control_text(control).strip()
+            return current or buffer.value.strip()
+        except Exception:
+            return ""
+
+    def _v7609_link_block_message(self) -> str:
+        reason = getattr(self, "_v7609_link_identity_reason", "")
+        details = {
+            "REST_ACCOUNT_UNVERIFIED": "REST 계좌 인증 미확인: 인증키·토큰 복구 상태를 확인해주세요.",
+            "HTS_ACCOUNT_UNREADABLE": "해당 영웅문의 계좌 선택 표시를 읽지 못했습니다. 계좌 표시가 보이는 화면을 열어주세요.",
+            "HTS_ACCOUNT_MISMATCH_OR_MASKED": "해당 영웅문의 선택 계좌가 다르거나 마스킹되어 확인할 수 없습니다.",
+            "CHART_NOT_VISIBLE_0600": "연결할 [0600] 키움종합차트가 보이지 않습니다.",
+            "MULTIPLE_VERIFIED_CHARTS": "인증 계좌의 [0600] 대상이 여러 개입니다. 연결할 차트 하나를 확인해주세요.",
+        }
+        return details.get(reason, "REST 계좌 인증과 연결할 [0600] 하나를 확인해야 합니다.") + " 안전을 위해 입력을 차단했습니다."
+
+    @staticmethod
+    def _v7609_parent_window(control: int) -> int:
+        getter = ctypes.windll.user32.GetParent
+        getter.argtypes = (wintypes.HWND,)
+        getter.restype = wintypes.HWND
+        return int(getter(wintypes.HWND(control)) or 0)
+
+    def _v7609_account_control_scope(self, chart: int, control: int) -> int:
+        """Identify the visible 2000 order-account area, never the query tabs.
+
+        Observed Hero4: buy/sell account Edits are outside SysTabControl32;
+        the independent balance-query account is inside it. Read context only:
+        this does not make 2000 or its inputs eligible for symbol transmission.
+        Unknown layouts, hidden controls and cross-process ancestry fail closed.
+        """
+        owner = self._window_pid(chart)
+        current = int(control)
+        visited = set()
+        for _ in range(32):
+            if (not current or current in visited or not self._window_alive(current)
+                    or self._window_pid(current) != owner):
+                return 0
+            visited.add(current)
+            if self._win_class(current).casefold() == "systabcontrol32":
+                return 0
+            title = self._window_title_safe(current)
+            if "[2000]" in title and "주식종합" in title:
+                return current
+            # Never climb out of another screen into a misleading owner.
+            if re.search(r"\[\d{4}\]", title):
+                return 0
+            current = self._v7609_parent_window(current)
+        return 0
+
+    def _v7609_chart_selected_accounts(self, chart: int) -> list[str]:
+        """Read the live order-account displays in one 2000 of this HTS PID.
+
+        No account list expansion, keyboard input, disk cache, or account log.
+        The 2000 balance/query tab and separate account-query windows can show
+        a different account without changing the buy/sell selection. They must
+        not veto the order-account proof. Within the selected area all account
+        values must still agree with REST; missing/masked/mixed proof blocks.
+        """
+        try:
+            deadline = time.monotonic() + 2.0
+            pid = self._window_pid(chart)
+            if not pid:
+                return []
+            roots = {chart, self._top_level_of(chart), *self._enum_top_windows()}
+            controls: set[int] = set()
+            for root in roots:
+                if root and self._window_alive(root) and self._window_pid(root) == pid:
+                    controls.add(root)
+                    controls.update(self._enum_descendants(root))
+            texts = []
+            edit_texts = []
+            scopes = {}
+            visible_combos = visible_edits = 0
+            combos = [h for h in controls if "combobox" in self._win_class(h).lower()]
+            for control in sorted(controls):
+                if time.monotonic() > deadline:
+                    return []
+                if (not self._window_alive(control)
+                        or self._window_pid(control) != pid):
+                    continue
+                control_class = self._win_class(control).lower()
+                if "combobox" not in control_class and control_class != "edit":
+                    continue
+                scope = self._v7609_account_control_scope(chart, control)
+                if not scope:
+                    continue
+                if "combobox" in control_class:
+                    visible_combos += 1
+                    text = self._v7609_selected_combo_text(control)
+                elif control_class == "edit":
+                    visible_edits += 1
+                    # Do not double-count a ComboBox and its own Edit child,
+                    # or accept text inside a chart as an account display.
+                    if self._belongs_to_chart(chart, control) or any(
+                        self._is_child(combo, control) for combo in combos
+                    ):
+                        continue
+                    text = self._read_control_text(control).strip()
+                    if not (re.fullmatch(r"\d{4}-\d{4}(?:-\d{2})?", text) or
+                            re.fullmatch(r"[*●•Xx]{2,}[- ]?\d{2,}", text)):
+                        continue
+                    if not self._window_alive(control) or self._window_pid(control) != pid:
+                        return []
+                    edit_texts.append(text)
+                    scopes.setdefault(scope, {"combo": [], "edit": []})["edit"].append(text)
+                    continue
+                else:
+                    continue
+                if re.search(r"(?<!\d)\d{4}-?\d{4}(?:-?\d{2})?(?!\d)", text) or re.search(
+                    r"[*●•Xx]{2,}[- ]?\d{2,}", text
+                ):
+                    texts.append(text)
+                    scopes.setdefault(scope, {"combo": [], "edit": []})["combo"].append(text)
+            if time.monotonic() > deadline or self._window_pid(chart) != pid:
+                return []
+            stats = (visible_combos, len(texts), visible_edits, len(edit_texts), len(scopes))
+            previous = getattr(self, "_v7609_account_read_stats", {})
+            if previous.get(pid) != stats:
+                if len(previous) > 16:
+                    previous.clear()
+                previous[pid] = stats
+                self._v7609_account_read_stats = previous
+                v57.diag(f"V7609_ACCOUNT_DISPLAY_READ pid={pid} combos={stats[0]} "
+                         f"account_combos={stats[1]} edits={stats[2]} account_edits={stats[3]} "
+                         f"primary_2000_scopes={stats[4]}")
+            # Never pick one of multiple order-account areas by coordinates,
+            # title scoring, recency, or a partial matching account number.
+            if len(scopes) != 1:
+                return []
+            selected = next(iter(scopes.values()))
+            if selected["combo"] or len(selected["edit"]) >= 2:
+                return selected["combo"] + selected["edit"]
+            return []
+        except Exception as exc:
+            v57.diag(f"V7609_HTS_ACCOUNT_UNCONFIRMED {type(exc).__name__}")
+            return []
 
     def __init__(self, config_path: Path) -> None:
         super().__init__(config_path)
@@ -1170,11 +1706,16 @@ class V7600CtrlVHeroLink(_R21_LINK_CLASS):
         """
 
         values = super()._chart_candidates()
-        exact = [item for item in values if self._is_exact_0600_chart(int(item.hwnd))
-                 and self._v7609_display_chart_valid(int(item.hwnd))]
+        exact = []
+        reasons = []
+        for item in values:
+            if self._v7609_display_chart_valid(int(item.hwnd)):
+                exact.append(item)
+            else:
+                reasons.append(getattr(self, "_v7609_link_identity_reason", ""))
         rejected = len(values) - len(exact)
         if rejected:
-            v57.diag(f"V7609_NON_0600_CANDIDATES_BLOCKED count={rejected}")
+            v57.diag(f"V7609_UNVERIFIED_CHARTS_BLOCKED count={rejected}")
         if self._v7609_locked_chart_valid():
             locked_chart = int(self._v7609_fast_chart)
             locked = [item for item in exact if int(item.hwnd) == locked_chart]
@@ -1182,11 +1723,18 @@ class V7600CtrlVHeroLink(_R21_LINK_CLASS):
                 return locked
         owners = {int(item.top or item.hwnd) for item in exact}
         if len(owners) > 1:
+            self._v7609_link_identity_reason = "MULTIPLE_VERIFIED_CHARTS"
             v57.diag(
                 f"V7609_MULTI_KIWOOM_0600_BLOCKED owners={len(owners)} "
                 f"charts={len(exact)}"
             )
             return []
+        if len(exact) > 1:
+            self._v7609_link_identity_reason = "MULTIPLE_VERIFIED_CHARTS"
+        elif not exact:
+            self._v7609_link_identity_reason = next((reason for reason in (
+                "REST_ACCOUNT_UNVERIFIED", "HTS_ACCOUNT_UNREADABLE",
+                "HTS_ACCOUNT_MISMATCH_OR_MASKED") if reason in reasons), "CHART_NOT_VISIBLE_0600")
         return exact
 
     def _v7609_multiple_0600_sessions(self) -> bool:
@@ -1244,10 +1792,7 @@ class V7600CtrlVHeroLink(_R21_LINK_CLASS):
         candidates = self._chart_candidates()
         if len(candidates) != 1:
             v57.diag(f"V7609_CHECK_ACCOUNT_TARGET_UNRESOLVED count={len(candidates)}")
-            return False, (
-                "REST 0311 인증과 연결할 [0600] 하나를 확인해야 합니다. "
-                "차트가 여러 개이면 기존에 고정한 차트만 사용합니다."
-            )
+            return False, self._v7609_link_block_message()
         for candidate in candidates:
             chart = int(candidate.hwnd)
             target = self._find_live_0600_edit(chart)
@@ -1405,6 +1950,8 @@ class V7600CtrlVHeroLink(_R21_LINK_CLASS):
             return v57.LinkStatus.FAILED, (
                 f"고속 0600 직접쓰기 실패 written={written!r} error={error}"
             )
+        if not self._v7609_display_chart_valid(chart):
+            return v57.LinkStatus.FAILED, "전송 중 HTS 계좌 변경/미확인: Enter 차단"
         enter_down, enter_up = self._post_enter_to_edit(target)
         if not enter_down or not enter_up:
             return v57.LinkStatus.FAILED, "고속 0600 Enter 전달 실패"
@@ -1744,14 +2291,12 @@ class V7600CtrlVHeroLink(_R21_LINK_CLASS):
             self._v7609_fast_top = 0
             self._v7609_clear_edit_cache()
 
-        # Display routing does not inspect HTS order/account controls.
-        # Only an existing exact chart binding or one unambiguous chart is used.
+        # Every path, including saved handles, requires current same-PID account
+        # evidence. Login order, chart position and old success logs prove none.
         candidates = self._chart_candidates()
         if len(candidates) != 1:
             v57.diag(f"V7609_SEND_ACCOUNT_TARGET_UNRESOLVED count={len(candidates)}")
-            return v57.LinkStatus.FAILED, (
-                "REST 0311 인증 또는 단일 [0600] 대상 미확인으로 입력을 차단했습니다."
-            )
+            return v57.LinkStatus.FAILED, self._v7609_link_block_message()
 
         # First click: enumerate only exact visible [0600] charts and use only
         # an unambiguous descendant Edit.  No saved cursor, AppActivate or
@@ -1791,6 +2336,664 @@ def _set_dpi_awareness() -> None:
 
 
 _set_dpi_awareness()
+
+
+_V7614_SIGNED = re.compile(r"[+\-][\d,]*\d(?:\.\d+)?%?")
+
+
+def _v7614_signed_text(text: str) -> str:
+    """'+1,234' → '▲+1,234', '-1.2%' → '▼-1.2%' (값 전체가 부호 숫자일 때만, 화면 표시 전용)."""
+    value = str(text)
+    stripped = value.strip()
+    if not _V7614_SIGNED.fullmatch(stripped):
+        return value
+    try:
+        number = float(stripped.replace(",", "").rstrip("%"))
+    except ValueError:
+        return value
+    if number > 0:
+        return "▲" + stripped
+    if number < 0:
+        return "▼" + stripped
+    return stripped.lstrip("+-")
+
+
+def _v7630_signal_low(proof: dict[str, Any]) -> float:
+    """매수 신호봉(자료 시각과 같은 봉, 없으면 마지막 봉)의 저가. 못 구하면 0."""
+    try:
+        bars = list(proof.get('bars') or [])
+        stamp = str(proof.get('data_time', ''))
+        bar = next((b for b in reversed(bars) if str(b.get('timestamp', '')) == stamp), bars[-1] if bars else None)
+        return float(bar['low']) if bar else 0.0
+    except Exception:
+        return 0.0
+
+
+def _v7614_overlay(symbol: str) -> dict[str, float]:
+    engine = _V7614_ENGINE.get("engine")
+    position = getattr(getattr(engine, "broker", None), "positions", {}).get(str(symbol).zfill(6)) if engine else None
+    if position is None:
+        return {}
+    return {"avg": float(getattr(position, "entry_price", 0) or 0),
+            "target": float(getattr(position, "target_price", 0) or 0),
+            "stop": float(getattr(position, "stop_price", 0) or 0)}
+
+
+def _v7614_quote_summary(symbol: str) -> dict[str, Any]:
+    """Read existing engine data only; never request data or change trading state."""
+    engine = _V7614_ENGINE.get("engine")
+    symbol = str(symbol).zfill(6)
+    now = datetime.now(KST)
+    quote = getattr(engine, "latest_quotes", {}).get(symbol)
+    stamp = getattr(quote, "timestamp", None)
+    if (not isinstance(stamp, datetime) or stamp.tzinfo is None
+            or stamp.astimezone(KST).date() != now.date()
+            or str(getattr(quote, "symbol", "")).zfill(6) != symbol):
+        return {}
+    result = {"change_pct": getattr(quote, "change_pct", None),
+              "volume": getattr(quote, "cumulative_volume", None), "timestamp": stamp}
+    saved = getattr(engine, "_v7609_prebuy_daily_cache", {}).get((symbol, now.date()))
+    if saved and saved[1]:
+        previous = saved[1]
+        if str(previous[0]) < now.date().isoformat():
+            result["previous_volume"] = previous[1]
+    return result
+
+
+def _v7614_api_code(symbol: str, client: Any) -> str:
+    base = _V753.base_symbol(str(symbol))
+    return _V753.api_symbol(base, str(getattr(getattr(client, "settings", None), "suffix", "") or ""))
+
+
+# ---------------------------------------------------------------------------
+# V7620 (2026-11-10 형 지시): 하단 4칸(입력·해석·활성·이력)을 2칸으로 합쳐 표 공간을 넓힌다.
+# 잠긴 V75.57 화면 코드는 그대로 두고, 원래 위젯은 숨긴 채 그 기능(뜻 확인·적용·활성등록·취소)을 그대로 호출한다.
+_V7620_RESULTS: dict[str, tuple[bool, str]] = {}
+try:
+    _V7620_BASE_REPORT = v57.HUB.report_result
+
+    def _v7620_report_result(command_id: str, *, ok: bool, message: str, kind: str = "") -> None:
+        _V7620_RESULTS[str(command_id)] = (bool(ok), str(message))
+        return _V7620_BASE_REPORT(command_id, ok=ok, message=message, kind=kind)
+
+    v57.HUB.report_result = _v7620_report_result
+except Exception:   # 화면 보조 기능: 실패해도 엔진은 그대로
+    pass
+
+V7620_ACTION_TEXT = {
+    "IMMEDIATE_SELL": "즉시 전량 매도", "IMMEDIATE_BUY": "즉시 매수(1차)", "PAUSE_BUY": "신규매수 전체 중지",
+    "INCLUDE": "감시 목록에 편입", "EXCLUDE": "감시·자동매수에서 제외",
+}
+V7620_HINT = "예) 5% 수익나면 팔아 · 지금 손절해 · 지금 사 · 빼 · 10,000원에 매수 · 오늘 장 약하다 · 테마 강하다 에코프로"
+
+
+def _v7633_compact_header(root: Any) -> None:
+    """V7633 (2026-11-25 형 지시): 표·차트 위 머리 부분(제목·단계카드·합계카드)을 약 30% 줄인다.
+    글씨 크기는 그대로(60대 가독성) — 여백을 줄이고, 카드 아래 작은 설명줄을 빼고, 합계카드는 이름·값을 한 줄로."""
+    import tkinter as tk
+    from tkinter import ttk
+    summary_names = {"보유합계", "평가손익", "실현손익(오늘)", "총손익", "가용현금"}
+    pending = list(root.winfo_children())
+    while pending:
+        widget = pending.pop()
+        try:
+            pending.extend(widget.winfo_children())
+        except Exception:
+            continue
+        try:
+            if isinstance(widget, tk.Frame) and str(widget.cget("highlightbackground")).lower() == "#3186c8":
+                widget.configure(pady=2, padx=10)                      # 제목 바
+                header = widget.master
+                if header.winfo_manager() == "pack":
+                    header.pack_configure(pady=(0, 3))
+            elif isinstance(widget, tk.Label) and re.match(r"^\d{2}\s", str(widget.cget("text") or "")):
+                band = widget.master                                   # 단계카드 제목 띠
+                card = band.master
+                if not isinstance(band, tk.Frame) or not isinstance(card, tk.Frame):
+                    continue
+                band.configure(pady=1)
+                for child in card.winfo_children():
+                    if child is band or not isinstance(child, tk.Label):
+                        continue
+                    if str(child.cget("textvariable") or ""):
+                        child.configure(pady=0)                       # 건수(큰 글씨) 그대로
+                    elif child.winfo_manager() == "pack":
+                        child.pack_forget()                           # '거래량 유입·초기 포착' 같은 작은 설명줄
+                cards = card.master
+                if cards.winfo_manager() == "pack":
+                    cards.pack_configure(pady=(0, 3))
+            elif isinstance(widget, ttk.Label) and str(widget.cget("text") or "") in summary_names:
+                box = widget.master                                    # 합계카드: 이름 왼쪽 · 값 오른쪽 한 줄
+                box.configure(padding=(10, 3))                         # V7633c: 형 지시 합계칸 높이 +15% (1→3)
+                widget.pack_configure(side="left")
+                for child in box.winfo_children():
+                    if isinstance(child, ttk.Label) and child is not widget and child.winfo_manager() == "pack":
+                        child.pack_configure(side="right")
+                strip = box.master
+                if strip.winfo_manager() == "pack":
+                    strip.pack_configure(pady=(0, 3))
+        except Exception:
+            continue
+
+
+def _v7620_fit_height(root: Any) -> None:
+    panel = getattr(root, "_v7620_panel", None)
+    if not panel:
+        return
+    try:
+        left, right = panel["left"], panel["right"]
+        bottom = left.master
+        root.update_idletasks()
+        need = max(int(left.winfo_reqheight()), int(right.winfo_reqheight()), 104) + 4   # V7633: 150→104 (하단 30% 축소)
+        bottom.configure(height=need)
+        bottom.master.configure(height=need + 4)
+    except Exception:
+        pass
+
+
+def _v7620_install_command_panel(root: Any, gui: Any) -> None:
+    import tkinter as tk
+    from tkinter import ttk, messagebox
+
+    frames: dict[str, Any] = {}
+    pending = [root]
+    while pending:
+        widget = pending.pop()
+        try:
+            pending.extend(widget.winfo_children())
+        except Exception:
+            continue
+        if isinstance(widget, ttk.LabelFrame):
+            frames.setdefault(str(widget.cget("text")), widget)
+    collab = frames.get("형 의견·명령 입력")
+    preview = frames.get("형 요청 해석결과 미리보기")
+    active_tab = frames.get("형 요청 활성 목록")
+    history_tab = frames.get("의견·요청 시간대별 이력")
+    if not all((collab, preview, active_tab, history_tab)):
+        return
+    bottom = collab.master
+
+    def walk(widget: Any) -> list[Any]:
+        out, todo = [], [widget]
+        while todo:
+            item = todo.pop()
+            out.append(item)
+            todo.extend(item.winfo_children())
+        return out
+
+    buttons = {str(w.cget("text")).strip()[:1]: w for w in walk(collab) if isinstance(w, ttk.Button)}
+    original_text = getattr(gui, "collab_input", None)
+    if original_text is None or not all(k in buttons for k in "1234"):
+        return
+    collab_children = collab.grid_slaves()
+    selected_label = next((w for w in collab.grid_slaves(row=0) if isinstance(w, ttk.Label)), None)
+    error_labels = [w for w in collab.grid_slaves(row=2) if isinstance(w, tk.Label)]
+    preview_at = {(int(w.grid_info()["row"]), int(w.grid_info()["column"])): w for w in preview.grid_slaves()}
+    action_label, symbol_label = preview_at.get((0, 1)), preview_at.get((0, 3))
+    buy_entry, target_entry, trigger_box = preview_at.get((1, 1)), preview_at.get((1, 3)), preview_at.get((2, 1))
+    active_tree = next((w for w in walk(active_tab) if isinstance(w, ttk.Treeview)), None)
+    history_tree = next((w for w in walk(history_tab) if isinstance(w, ttk.Treeview)), None)
+    if None in (selected_label, action_label, symbol_label, buy_entry, target_entry, trigger_box, active_tree, history_tree):
+        return
+    del collab_children
+
+    def var_text(widget: Any) -> str:
+        name = str(widget.cget("textvariable") or "")
+        return str(root.globalgetvar(name)) if name else str(widget.cget("text"))
+
+    # ---- 원래 4칸 숨기기
+    for frame in (collab, preview, active_tab, history_tab):
+        frame.grid_remove()
+    for column in range(4):
+        bottom.columnconfigure(column, weight=0, uniform="", minsize=0)
+    bottom.columnconfigure(0, weight=56, uniform="v7620")
+    bottom.columnconfigure(1, weight=44, uniform="v7620")
+
+    panel_bg = "#0d2238"
+    fg, muted, danger, warn, good = "#e7f0f8", "#9fb3c8", "#ff8a8a", "#ffd166", "#8dffc0"
+    font = ("맑은 고딕", 11)
+    left = ttk.LabelFrame(bottom, text="형 지시 → 자동매매 즉시 반영  (Enter: 해석 보기 · 적용: 실행 · Esc: 지우기)",
+                          style="Input.TLabelframe", padding=3)   # V7633: 6→3
+    left.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+    right = ttk.LabelFrame(bottom, text="지금 걸려 있는 지시 · 시간대별 이력", style="Active.TLabelframe", padding=3)
+    right.grid(row=0, column=1, sticky="nsew")
+
+    top_row = tk.Frame(left, bg=panel_bg)
+    top_row.grid(row=0, column=0, columnspan=2, sticky="ew")
+    ttk.Label(top_row, textvariable=str(selected_label.cget("textvariable")), style="Panel.TLabel",
+              font=("맑은 고딕", 11, "bold")).pack(side="left")
+    tk.Label(top_row, text="   " + V7620_HINT, bg=panel_bg, fg=muted, font=("맑은 고딕", 9), anchor="w").pack(side="left", fill="x")
+    # V7633: 입력칸 1줄(긴 지시는 자동 줄바꿈 스크롤). 배경색 끝자리를 바꿔 옛 화면맞춤(#f4f6f8→2줄)이 덮어쓰지 않게 한다.
+    entry = tk.Text(left, height=1, wrap="word", bg="#f4f6f9", fg="#1b2735", insertbackground="#1b2735",
+                    relief="solid", bd=1, font=font)
+    entry.grid(row=1, column=0, sticky="nsew", pady=(3, 2))
+    button_box = tk.Frame(left, bg=panel_bg)
+    button_box.grid(row=1, column=1, sticky="ns", padx=(6, 0), pady=(3, 2))
+    apply_button = ttk.Button(button_box, text="적용", style="Apply.TButton")
+    apply_button.pack(side="left", fill="y")   # V7633: 적용·지우기를 옆으로 나란히(높이 절약)
+    cancel_button = ttk.Button(button_box, text="지우기", style="Cancel.TButton")
+    cancel_button.pack(side="left", fill="y", padx=(4, 0))
+    meaning_var = tk.StringVar(master=root, value="해석: 지시를 적고 Enter를 누르면 여기에 뜻이 먼저 나옵니다. 맞으면 [적용].")
+    meaning = tk.Label(left, textvariable=meaning_var, bg=panel_bg, fg=fg, font=("맑은 고딕", 11, "bold"),
+                       anchor="w", justify="left")
+    meaning.grid(row=2, column=0, columnspan=2, sticky="ew")
+    price_row = tk.Frame(left, bg=panel_bg)
+    tk.Label(price_row, text="매수가", bg=panel_bg, fg=muted, font=font).pack(side="left")
+    ttk.Entry(price_row, textvariable=str(buy_entry.cget("textvariable")), width=10, font=font).pack(side="left", padx=(4, 10))
+    tk.Label(price_row, text="목표가", bg=panel_bg, fg=muted, font=font).pack(side="left")
+    ttk.Entry(price_row, textvariable=str(target_entry.cget("textvariable")), width=10, font=font).pack(side="left", padx=(4, 10))
+    tk.Label(price_row, text="조건", bg=panel_bg, fg=muted, font=font).pack(side="left")
+    my_trigger = ttk.Combobox(price_row, textvariable=str(trigger_box.cget("textvariable")),
+                              values=tuple(trigger_box.cget("values")), state="readonly", width=12, font=font)
+    my_trigger.pack(side="left", padx=(4, 0))
+    my_trigger.bind("<<ComboboxSelected>>", lambda _e: trigger_box.event_generate("<<ComboboxSelected>>"), add="+")
+    tk.Label(price_row, text="  (유효: 오늘 장 종료)", bg=panel_bg, fg=muted, font=("맑은 고딕", 9)).pack(side="left")
+    own_error = tk.StringVar(master=root, value="")
+    notes = tk.Frame(left, bg=panel_bg)
+    note_vars = [(own_error, danger)] + [(tk.StringVar(master=root, name=str(label.cget("textvariable"))), color)
+                                         for label, color in zip(error_labels[:2], (danger, warn))]
+    note_labels = []
+    for variable, color in note_vars:
+        note_labels.append(tk.Label(notes, textvariable=variable, bg=panel_bg, fg=color,
+                                    font=("맑은 고딕", 10), anchor="w", justify="left"))
+
+    def relayout_notes(*_args: Any) -> None:
+        # 빈 안내 줄은 숨겨서 높이를 아낀다
+        shown = False
+        for (variable, _color), label in zip(note_vars, note_labels):
+            if str(variable.get()).strip():
+                label.pack(fill="x")
+                shown = True
+            else:
+                label.pack_forget()
+        if shown:
+            notes.grid(row=4, column=0, columnspan=2, sticky="ew")
+        else:
+            notes.grid_remove()
+        root.after_idle(lambda: _v7620_fit_height(root))
+
+    for variable, _color in note_vars:
+        variable.trace_add("write", relayout_notes)
+    root._v7620_vars = [v for v, _c in note_vars]
+    relayout_notes()
+    left.columnconfigure(0, weight=1)
+
+    def rewrap(_event: Any = None) -> None:
+        width = max(200, int(left.winfo_width()) - 20)
+        meaning.configure(wraplength=width)
+        for item in note_labels:
+            item.configure(wraplength=width)
+    left.bind("<Configure>", rewrap, add="+")
+
+    # ---- 오른쪽: 활성 / 이력 전환
+    switch = tk.Frame(right, bg=panel_bg)
+    right.configure(labelwidget=switch)   # V7633: 버튼 줄을 칸 제목 자리로 올려 한 줄(약 30px) 절약
+    mode = {"tab": "active"}
+    active_button = ttk.Button(switch, text="걸려 있는 지시 0건", style="Active.TButton")
+    history_button = ttk.Button(switch, text="시간대별 이력", style="Confirm.TButton")
+    release_button = ttk.Button(switch, text="선택 지시 해제", style="Cancel.TButton")
+    active_button.pack(side="left")
+    history_button.pack(side="left", padx=4)
+    release_button.pack(side="right")
+    ttk.Style(root).configure("V7620.Treeview", rowheight=24, font=("맑은 고딕", 10))   # V7633: 26→24
+    mirror = ttk.Treeview(right, columns=("a", "b", "c", "d"), show="headings", height=2, selectmode="browse",   # V7633: 3→2줄
+                          style="V7620.Treeview")
+    scroll = ttk.Scrollbar(right, orient="vertical", command=mirror.yview)
+    mirror.configure(yscrollcommand=scroll.set)
+    scroll.pack(side="right", fill="y", pady=(2, 0))
+    mirror.pack(fill="both", expand=True, pady=(2, 0))
+    heads = {"active": (("상태", 64), ("종목", 100), ("지시·조건", 300), ("유효", 96)),
+             "history": (("시각", 84), ("유형", 100), ("내용", 300), ("상태", 70))}
+    own_history: list[tuple[str, str, str, str]] = []   # (iso, type, summary, command_id)
+
+    def set_heads() -> None:
+        for column, (label, width) in zip(("a", "b", "c", "d"), heads[mode["tab"]]):
+            mirror.heading(column, text=label)
+            mirror.column(column, width=width, minwidth=50, stretch=(column == "c"),
+                          anchor="w" if column == "c" else "center")
+
+    def override_rows() -> list[tuple[str, tuple[str, str, str, str]]]:
+        rows = []
+        try:
+            data = json.loads(V7620_OVERRIDE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return rows
+        for symbol, item in sorted((data.get("positions") or {}).items()):
+            pct = float(item.get("target_pct", 0) or 0)
+            rows.append((f"v7620:pos:{symbol}", ("형지시", str(item.get("name") or symbol),
+                         f"목표 평단 +{pct:.1%} · 장마감 정리 없음(다음날로 이월) 안 함(이월) · 자동손절 없음", "매도될 때까지")))
+        weak = data.get("market_weak") or {}
+        if str(weak.get("date", "")) == datetime.now(KST).strftime("%Y%m%d"):
+            rows.append(("v7620:weak", ("초보수", "시장 전체", "오늘 장 약함 → 신규 1차·추가매수 중단 (매도는 그대로)", "오늘 장 종료")))
+        return rows
+
+    def history_rows() -> list[tuple[str, tuple[str, str, str, str]]]:
+        rows = []
+        for stamp, kind_text, summary, command_id in reversed(own_history[-40:]):
+            ok_message = _V7620_RESULTS.get(command_id)
+            status = "대기" if ok_message is None else ("적용" if ok_message[0] else "거절")
+            text = summary if ok_message is None else f"{summary} → {ok_message[1]}"
+            parsed = datetime.fromisoformat(stamp)
+            rows.append((f"v7620h:{command_id}", (f"{parsed.month}/{parsed.day} {parsed:%H:%M}", kind_text, text, status)))
+        for iid in history_tree.get_children():
+            rows.append((f"orig:{iid}", tuple(str(v) for v in history_tree.item(iid, "values"))[:4]))
+        return rows
+
+    def refresh() -> None:
+        try:
+            if not mirror.winfo_exists():
+                return
+            actives = [(f"orig:{iid}", tuple(str(v) for v in active_tree.item(iid, "values"))[:4])
+                       for iid in active_tree.get_children()] + override_rows()
+            active_button.configure(text=f"걸려 있는 지시 {len(actives)}건")
+            rows = actives if mode["tab"] == "active" else history_rows()
+            selected = mirror.selection()
+            keep = {iid for iid, _values in rows}
+            for iid in mirror.get_children():
+                if iid not in keep:
+                    mirror.delete(iid)
+            for position, (iid, values) in enumerate(rows):
+                if mirror.exists(iid):
+                    if tuple(mirror.item(iid, "values")) != tuple(values):
+                        mirror.item(iid, values=values)
+                    mirror.move(iid, "", position)
+                else:
+                    mirror.insert("", position, iid=iid, values=values)
+            if selected and mirror.exists(selected[0]):
+                mirror.selection_set(selected[0])
+        except Exception:
+            pass
+        root.after(1000, refresh)
+
+    def show(tab: str) -> None:
+        mode["tab"] = tab
+        for iid in mirror.get_children():
+            mirror.delete(iid)
+        set_heads()
+        release_button.configure(state="normal" if tab == "active" else "disabled")
+        refresh_once()
+
+    def refresh_once() -> None:
+        try:
+            actives = [(f"orig:{iid}", tuple(str(v) for v in active_tree.item(iid, "values"))[:4])
+                       for iid in active_tree.get_children()] + override_rows()
+            for iid, values in (actives if mode["tab"] == "active" else history_rows()):
+                if not mirror.exists(iid):
+                    mirror.insert("", "end", iid=iid, values=values)
+        except Exception:
+            pass
+
+    active_button.configure(command=lambda: show("active"))
+    history_button.configure(command=lambda: show("history"))
+
+    def release() -> None:
+        selected = mirror.selection()
+        if not selected:
+            own_error.set("오른쪽 목록에서 해제할 지시를 먼저 누르세요.")
+            return
+        iid = str(selected[0])
+        if iid.startswith("orig:"):
+            original = iid.split(":", 1)[1]
+            if active_tree.exists(original):
+                active_tree.selection_set(original)
+                buttons["4"].invoke()            # 원래 '선택 요청 취소' 확인창 → 해제
+            return
+        if iid == "v7620:weak":
+            if messagebox.askyesno("초보수 해제", "오늘 초보수 모드(신규 1차·추가매수 중단)를 해제할까요?"):
+                submit({"kind": "V7620_MARKET_OK", "note": "목록에서 해제"}, "초보수 해제")
+            return
+        if iid.startswith("v7620:pos:"):
+            symbol = iid.rsplit(":", 1)[1]
+            name = str(mirror.item(iid, "values")[1])
+            if messagebox.askyesno("형 지시 해제", f"{name} 형 지시를 풀고 원래 로직(목표·15:19 정리)으로 돌릴까요?"):
+                submit({"kind": "V7620_RELEASE", "symbol": symbol, "name": name, "note": "목록에서 해제"}, "형지시 해제")
+
+    release_button.configure(command=release)
+
+    # ---- 해석 / 적용
+    state: dict[str, Any] = {"pending": None, "text": ""}
+
+    def current_selection() -> tuple[str, str]:
+        match = re.search(r"선택종목:\s*(.*?)\s*(\d{6})\s*$", var_text(selected_label))
+        return (match.group(2), match.group(1)) if match else ("", "")
+
+    def known_names() -> tuple[dict[str, str], set[str]]:
+        known = dict(getattr(parent.v7556, "_V7555_NAME_HINT", {}) or {})
+        held = set()
+        for row in list(getattr(gui, "last_gui_rows", []) or []):
+            symbol, name = str(row.get("symbol", "")), str(row.get("name", ""))
+            if re.fullmatch(r"\d{6}", symbol):
+                if name:
+                    known[name] = symbol
+                if str(row.get("stage", "")) == "매수종목":
+                    held.add(symbol)
+        return known, held
+
+    def submit(command: dict[str, Any], kind_text: str) -> None:
+        command_id = v57.HUB.submit(command)
+        own_history.append((datetime.now(KST).isoformat(), kind_text, str(command.get("summary") or command.get("note") or ""),
+                            command_id))
+
+    def interpret(_event: Any = None) -> str:
+        text = " ".join(entry.get("1.0", "end-1c").split())
+        own_error.set("")
+        price_row.grid_remove()
+        if not text:
+            meaning_var.set("해석: 지시를 먼저 적어주세요.")
+            state["pending"] = None
+            return "break"
+        symbol, name = current_selection()
+        known, held = known_names()
+        result = _CMD20.interpret(text, selected_symbol=symbol, selected_name=name, known_names=known, held=held)
+        state["text"] = text
+        if result is not None:
+            for variable, _color in note_vars[1:]:
+                variable.set("")              # 직전 기존 해석의 빨강·노랑 안내가 남지 않게
+            state["pending"] = ("v7620", result)
+            if result.errors:
+                meaning_var.set(f"해석: {result.summary or '적용 불가'}")
+                own_error.set(" · ".join(result.errors))
+            else:
+                meaning_var.set(f"해석: {result.summary}  → 맞으면 [적용]")
+            return "break"
+        original_text.delete("1.0", "end")
+        original_text.insert("1.0", text)
+        buttons["1"].invoke()
+        action = var_text(action_label)
+        action = V7620_ACTION_TEXT.get(action, action)
+        target = var_text(symbol_label)
+        state["pending"] = ("orig", action)
+        code = re.search(r"(\d{6})", target)
+        if action == "즉시 전량 매도" and code and code.group(1) not in held:
+            own_error.set(f"{target}는 지금 보유 중이 아니라 매도할 수 없습니다.")
+            state["pending"] = ("blocked", action)
+        if action in {"가격조건 매수", "목표가 변경"}:
+            price_row.grid(row=3, column=0, columnspan=2, sticky="w", pady=(3, 0))
+        root.after_idle(lambda: _v7620_fit_height(root))
+        meaning_var.set(f"해석: {action} · {target}  → 맞으면 [적용]")
+        return "break"
+
+    def apply_pending() -> None:
+        current = " ".join(entry.get("1.0", "end-1c").split())
+        if state["pending"] is None or current != state["text"]:
+            interpret()
+            if state["pending"] is None:
+                return
+            if state["pending"][0] == "v7620" and state["pending"][1].errors:
+                return
+            meaning_var.set(meaning_var.get().replace("→ 맞으면 [적용]", "→ 한 번 더 [적용]을 누르면 실행"))
+            return       # 해석을 보여준 뒤 한 번 더 눌러야 실행(오해석 주문 방지)
+        source, item = state["pending"]
+        if source == "blocked":
+            return
+        if source == "v7620":
+            if item.errors:
+                own_error.set(" · ".join(item.errors))
+                return
+            note = state["text"]
+            if item.kind == "V7620_THEME_WATCH":
+                for symbol, name in item.watch:
+                    submit({"kind": "V7620_THEME_WATCH", "symbol": symbol, "name": name, "note": note,
+                            "summary": f"{name} 관심 우선감시"}, "테마·관심")
+                original_text.delete("1.0", "end")
+                original_text.insert("1.0", note)
+                buttons["1"].invoke()
+                buttons["2"].invoke()            # 테마 의견은 원래 원장(시간대별 이력)에도 저장
+            else:
+                kind_text = {"V7620_HOLD_PCT": "형지시 목표%", "V7620_RELEASE": "형지시 해제",
+                             "V7620_MARKET_WEAK": "장 약함", "V7620_MARKET_OK": "초보수 해제",
+                             "IMMEDIATE_SELL": "즉시 매도", "IMMEDIATE_BUY": "즉시 매수",
+                             "EXCLUDE": "제외"}.get(item.kind, item.kind)
+                submit({"kind": item.kind, "symbol": item.symbol, "name": item.name, "pct": item.pct,
+                        "note": note, "summary": item.summary}, kind_text)
+            meaning_var.set(f"접수: {item.summary} — 결과는 오른쪽 '시간대별 이력'에 표시됩니다.")
+        else:
+            action = item
+            if action == "가격조건 매수":
+                buttons["3"].invoke()
+            else:
+                buttons["2"].invoke()
+            meaning_var.set(f"접수: {action} — 결과는 오른쪽 목록·이력과 아래 상태줄에 표시됩니다.")
+        state["pending"] = None
+        state["text"] = ""
+        entry.delete("1.0", "end")
+
+    def clear(_event: Any = None) -> str:
+        entry.delete("1.0", "end")
+        state["pending"] = None
+        own_error.set("")
+        price_row.grid_remove()
+        meaning_var.set("해석: 지시를 적고 Enter를 누르면 여기에 뜻이 먼저 나옵니다. 맞으면 [적용].")
+        return "break"
+
+    entry.bind("<Return>", lambda e: None if e.state & 1 else interpret(), add="+")
+    entry.bind("<Escape>", clear, add="+")
+    apply_button.configure(command=apply_pending)
+    cancel_button.configure(command=clear)
+    set_heads()
+    root._v7620_panel = {"left": left, "right": right, "entry": entry, "mirror": mirror, "apply": apply_pending,
+                         "interpret": interpret, "meaning": meaning_var, "error": own_error, "show": show}
+    root.after(500, refresh)
+    root.after_idle(lambda: _v7620_fit_height(root))
+
+
+def _v7614_install_chart(root: Any) -> None:
+    """오른쪽 '단계별 의미 및 판단 기준' 판을 걷어내고 그 자리에 차트를 넣는다(한 번만)."""
+    import tkinter as tk
+    from tkinter import ttk
+
+    if getattr(root, "_v7614_chart", None) is not None:
+        return
+    pending = list(root.winfo_children())
+    pane = None
+    pnl_labels = []
+    while pending:
+        widget = pending.pop()
+        try:
+            pending.extend(widget.winfo_children())
+        except Exception:
+            pass
+        if isinstance(widget, ttk.Panedwindow) and str(widget.cget("orient")) == "horizontal" and len(widget.panes()) == 2:
+            pane = widget
+        if isinstance(widget, ttk.Label) and str(widget.cget("style")) == "Pnl.Panel.TLabel":
+            pnl_labels.append(widget)
+    if pane is None:
+        return
+    right = root.nametowidget(str(pane.panes()[1]))
+    for child in list(right.winfo_children()):
+        try:
+            manager = child.winfo_manager()
+            if manager == "pack":
+                child.pack_forget()
+            elif manager == "grid":
+                child.grid_forget()
+        except Exception:
+            pass
+
+    def focus_table() -> None:
+        for tree in list(getattr(root, "_v7602_stock_trees", [])):
+            try:
+                if tree.winfo_ismapped():
+                    tree.focus_set()
+                    return
+            except Exception:
+                continue
+        view = getattr(root, "_v7609_trade_view", None)
+        for table in getattr(view, "tables", {}).values() if view is not None else ():
+            try:
+                if table.winfo_ismapped():
+                    table.focus_set()
+                    return
+            except Exception:
+                continue
+
+    fetcher = _CHART14.ChartFetcher(
+        lambda: getattr(_V7614_ENGINE.get("engine"), "client", None), _v7614_api_code)
+    chart = _CHART14.ChartPanel(right, fetcher=fetcher, overlay_getter=_v7614_overlay,
+                              summary_getter=_v7614_quote_summary, focus_return=focus_table)
+    chart.pack(fill="both", expand=True)
+    root._v7614_chart = chart
+    pane.bind("<ButtonRelease-1>", lambda _e, p=pane: setattr(p, "_v7614_user_sash", True), add="+")
+
+    # V7617b: 가로 스크롤바는 열이 표보다 넓을 때만 보인다(한눈에 다 보이면 숨김).
+    for tree in list(getattr(root, "_v7602_stock_trees", [])):
+        try:
+            bars = [w for w in tree.master.winfo_children()
+                    if isinstance(w, ttk.Scrollbar) and str(w.cget("orient")) == "horizontal"]
+        except Exception:
+            bars = []
+        for bar in bars:
+            def toggle(_event: Any = None, tree=tree, bar=bar) -> None:
+                try:
+                    needed = sum(int(tree.column(c, "width")) for c in tree["displaycolumns"]
+                                 if c != "reason") + int(tree.column("reason", "minwidth"))
+                    if needed > int(tree.winfo_width()) - 4:
+                        if not bar.winfo_ismapped():
+                            bar.pack(side="bottom", fill="x", before=tree)
+                    elif bar.winfo_ismapped():
+                        bar.pack_forget()
+                except Exception:
+                    pass
+            tree.bind("<Configure>", toggle, add="+")
+            root.after(400, toggle)
+
+    # 손익 칸: 부호 화살표 + 수익 빨강/손실 파랑 + 큰 글씨
+    style = ttk.Style(root)
+    for name, color in (("V7614Up.Pnl.Panel.TLabel", _CHART14.UP), ("V7614Down.Pnl.Panel.TLabel", "#4d9bff"),
+                        ("V7614Flat.Pnl.Panel.TLabel", "#e7f0f8")):
+        style.configure(name, foreground=color, font=("맑은 고딕", 14, "bold"))
+    for label in pnl_labels:
+        variable_name = str(label.cget("textvariable") or "")
+        if not variable_name:
+            continue
+        variable = tk.StringVar(master=root, name=variable_name)
+
+        def recolor(*_args: Any, label=label, variable=variable) -> None:
+            try:
+                text_value = str(variable.get())
+                label.configure(style="V7614Up.Pnl.Panel.TLabel" if text_value.startswith("▲") else
+                                "V7614Down.Pnl.Panel.TLabel" if text_value.startswith("▼") else
+                                "V7614Flat.Pnl.Panel.TLabel")
+            except Exception:
+                pass
+
+        variable.trace_add("write", recolor)
+        root._v7614_vars = list(getattr(root, "_v7614_vars", [])) + [variable]   # Tcl 변수 해제 방지
+        variable.set(variable.get())
+
+    try:
+        import v7609_trade_view as trade_view
+        if not getattr(trade_view, "_v7614_signed", False):
+            original = trade_view.display_value
+
+            def display_value(row: Any, key: str) -> Any:
+                value = original(row, key)
+                return _v7614_signed_text(value) if key in {"net_pnl", "net_pnl_pct"} else value
+
+            trade_view.display_value = display_value
+            trade_view._v7614_signed = True
+    except Exception:
+        pass
 
 
 def _install_gui_fit_and_colors() -> None:
@@ -1888,23 +3091,28 @@ def _install_gui_fit_and_colors() -> None:
         except Exception:
             pass
         sold_view = selected_stage in {"매도종목", "오늘매도"}
+        # V7614: 글씨 11pt(기존 9pt)·행 높이 확대, 차트 자리를 위해 이유 열은 화면에 맞춰 늘어남.
+        # V7617: 열 합계를 표 칸(화면 55%)보다 작게 잡아 차트에 가려지지 않게 하고,
+        # 남는 폭은 '이유' 열이 채운다(stretch). 빈 공간이 컸던 종목명·등락률 폭을 줄였다.
         widths = {
-            "no": 48 if sold_view else 36,
-            "stage": 94,
-            "name": 210 if sold_view else 170,
-            "current": 88,
-            "basis": 88,
-            "change": 62,
-            "qty": 62,
-            "stage_time": 126 if sold_view else 112,
-            "reason": 800 if sold_view else 650,
+            "no": 40 if sold_view else 36,
+            "stage": 92,
+            "name": 150 if sold_view else 128,
+            "current": 80,
+            "basis": 84,
+            "change": 78,
+            "qty": 60,
+            "stage_time": 112 if sold_view else 96,
+            "reason": 260 if sold_view else 200,
         }
         try:
             ttk.Style(root).configure(
                 "R20Main.Treeview",
-                rowheight=80 if sold_view else 28,
-                font=("맑은 고딕", 9),
+                rowheight=92 if sold_view else 42,
+                font=V7614_TABLE_FONT,
             )
+            ttk.Style(root).configure("Treeview.Heading", font=(V7614_TABLE_FONT[0], 10, "bold"))
+            ttk.Style(root).configure("V7609Trade.Treeview", rowheight=34, font=V7614_TABLE_FONT)
         except Exception:
             pass
         for tree in list(getattr(root, "_v7602_stock_trees", [])):
@@ -1920,18 +3128,18 @@ def _install_gui_fit_and_colors() -> None:
                 pass
             for column, width in widths.items():
                 try:
-                    visible_width = 112 if holding_view and column == "change" else width
+                    visible_width = 96 if holding_view and column == "change" else width
                     tree.column(
                         column,
                         width=visible_width,
-                        minwidth=visible_width if column in {"no", "name"} else 36,
+                        minwidth=visible_width if column in {"no", "name"} else (120 if column == "reason" else 36),
                         stretch=column == "reason",
                     )
                 except Exception:
                     pass
 
     def _set_main_pane_ratio(root: Any) -> None:
-        """Use 80% for the stock table and 20% for the readable guide panel."""
+        """Use the configured stock-table/chart ratio; preserve manual sash moves."""
 
         pending = list(root.winfo_children())
         while pending:
@@ -1945,11 +3153,11 @@ def _install_gui_fit_and_colors() -> None:
                     if str(widget.cget("orient")) == "horizontal":
                         panes = tuple(widget.panes())
                         if len(panes) == 2:
-                            widget.pane(panes[0], weight=80)
-                            widget.pane(panes[1], weight=20)
+                            widget.pane(panes[0], weight=V7614_TABLE_PANE)
+                            widget.pane(panes[1], weight=V7614_CHART_PANE)
                             width = int(widget.winfo_width() or 0)
-                            if width > 100:
-                                widget.sashpos(0, int(width * 0.80))
+                            if width > 100 and not getattr(widget, "_v7614_user_sash", False):
+                                widget.sashpos(0, int(width * V7614_TABLE_PANE / (V7614_TABLE_PANE + V7614_CHART_PANE)))
             except Exception:
                 pass
             try:
@@ -2004,6 +3212,12 @@ def _install_gui_fit_and_colors() -> None:
                                             command=lambda: _v7609_open_stage_history(root))
                         button.pack(side="left", padx=4)
                         root._v7609_history_button = button
+                    if (str(widget.cget("text") or "") == "로그 보기"
+                            and not getattr(root, "_v7613_split_button", None)):
+                        split_button = ttk.Button(widget.master, text="분할매수 1·2·3차",
+                                                  command=lambda: _v7613_open_split_window(root))
+                        split_button.pack(side="left", padx=4)
+                        root._v7613_split_button = split_button
                     if str(widget.cget("text") or "") == "선택 삭제":
                         widget.configure(text="선택삭제")
                 elif isinstance(widget, ttk.LabelFrame):
@@ -2049,6 +3263,11 @@ def _install_gui_fit_and_colors() -> None:
                 bottom_host.rowconfigure(0, weight=1)
             except Exception:
                 pass
+            _v7620_fit_height(root)   # V7620: 2칸으로 줄였으면 남는 높이를 표에 돌려준다
+        try:
+            _v7633_compact_header(root)   # V7633: 머리 부분 30% 축소 → 표·차트가 그만큼 커진다
+        except Exception:
+            pass
         _apply_sold_card_palette(root)
         _apply_stock_table_layout(root, "전체")
         try:
@@ -2064,6 +3283,13 @@ def _install_gui_fit_and_colors() -> None:
         except Exception:
             pass
         _set_main_pane_ratio(root)
+        try:
+            _v7614_install_chart(root)
+        except Exception as exc:
+            try:
+                v57.diag(f"V7614_CHART_INSTALL_FAILED {type(exc).__name__}: {exc}")
+            except Exception:
+                pass
         try:
             root.after(120, lambda: _set_main_pane_ratio(root))
         except Exception:
@@ -2213,8 +3439,7 @@ def _install_gui_fit_and_colors() -> None:
                 self.configure(text=(
                     "오늘 매수·매도: 왼쪽 보유·오른쪽 당일 매도, 10행 높이·스크롤로 전체 확인. "
                     "일시·가격·비용포함 순손익·매도사유 구분. "
-                    "기본 -1.5%, 목표 +2% 이상. 매수 전 40봉 저점/5·10·20선 밀집지지 유지 시 보류, "
-                    "지지 이탈 또는 순손실 -3% 도달 시 손절."
+                    "PAPER 자동손절 없음. 기존 목표 익절·수동매도·종가베팅 다음날 청산은 유지."
                 ))
         except Exception:
             pass
@@ -2245,7 +3470,20 @@ def _install_gui_fit_and_colors() -> None:
         }
         for old, new in replacements.items():
             text_value = text_value.replace(old, new)
+        text_value = _v7614_signed_text(text_value)
         old_string_set(self, text_value)
+        if text_value.startswith("선택종목: ") and text_value != "선택종목: 없음":
+            try:
+                root = getattr(self, "_root", None)
+                if root is not None and not isinstance(root, tk.Misc):
+                    root = root()
+                chart = getattr(root, "_v7614_chart", None)
+                if chart is not None:
+                    body = text_value[len("선택종목: "):].strip()
+                    name, _, code = body.rpartition(" ")
+                    root.after_idle(lambda c=chart, s=code, n=name: c.show_symbol(s, n))
+            except Exception:
+                pass
         if getattr(self, "_v7595_category_filter", False):
             try:
                 root = self._root()
@@ -2284,6 +3522,10 @@ def _install_gui_fit_and_colors() -> None:
                 "매도종목": (_V7609_SELL_BODY, _V7609_SELL_TEXT),
                 "gain": _V7609_SELL_GAIN_TEXT, "loss": _V7609_SELL_LOSS_TEXT})
             install_command_submit(self, gui, _v7609_compile_command, v57.HUB)
+            try:
+                _v7620_install_command_panel(self, gui)
+            except Exception as exc:   # 화면 보조: 실패하면 원래 4칸 그대로
+                print(f"[V7620] 형 지시 2칸 화면 설치 보류: {type(exc).__name__}: {exc}")
         self.after_idle(lambda: _fit(self))
         self.after(350, lambda: _fit(self))
         return old_mainloop(self, *args, **kwargs)
@@ -2310,7 +3552,64 @@ def _install_gui_fit_and_colors() -> None:
                     if tag:
                         stage_tags = (tag,)
                         kwargs["tags"] = stage_tags
+        if getattr(self, "_v7595_main_stock_tree", False):
+            # V7614: 등락률 부호를 ▲/▼로 크게 표시(표시 문자열만, 자체 완결 코드).
+            values = list(kwargs.get("values", ()))
+            if len(values) > 4 and isinstance(values[4], str) and values[4].strip()[:1] in {"+", "-"}:
+                change_text = values[4].strip()
+                try:
+                    change_number = float(change_text.replace(",", "").rstrip("%"))
+                except ValueError:
+                    change_number = 0.0
+                if change_number > 0:
+                    values[4] = "▲" + change_text
+                elif change_number < 0:
+                    values[4] = "▼" + change_text
+                kwargs["values"] = tuple(values)
+        full_reason = None
+        if getattr(self, "_v7595_main_stock_tree", False):
+            raw_values = list(kwargs.get("values", ()))
+            if raw_values:
+                full_reason = " ".join(str(raw_values[-1] or "-").split())
         result = old_insert(self, parent_iid, index, iid, **kwargs)
+        if full_reason is not None:
+            # V7617b: 잠금 부모는 '이유'를 58자 고정으로 2줄 줄바꿈해 좁은 칸에서 오른쪽이 잘렸다.
+            # 실제 칸 너비(픽셀)에 맞춰 2줄로 다시 접고, 넘치면 끝을 '…'로 표시한다.
+            try:
+                import tkinter.font as tk_font
+                width = int(self.column("reason", "width") or 0) - 14
+                fonts = getattr(self, "_v7617_measure_font", None)
+                if fonts is None:
+                    fonts = self._v7617_measure_font = tk_font.Font(
+                        root=self, family=V7614_TABLE_FONT[0], size=V7614_TABLE_FONT[1])
+                if width > 60:
+                    lines, current = [], ""
+                    for word in full_reason.split(" "):
+                        trial = f"{current} {word}".strip()
+                        if fonts.measure(trial) <= width or not current:
+                            current = trial
+                            while fonts.measure(current) > width and len(current) > 1:
+                                cut = len(current) - 1
+                                while cut > 1 and fonts.measure(current[:cut]) > width:
+                                    cut -= 1
+                                lines.append(current[:cut])
+                                current = current[cut:]
+                        else:
+                            lines.append(current)
+                            current = word
+                    if current:
+                        lines.append(current)
+                    if len(lines) > 2:
+                        tail = lines[1]
+                        while tail and fonts.measure(tail + "…") > width:
+                            tail = tail[:-1]
+                        lines = [lines[0], tail + "…"]
+                    shown = list(self.item(result, "values"))
+                    if shown:
+                        shown[-1] = "\n".join(lines) if lines else "-"
+                        self.item(result, values=shown)
+            except Exception:
+                pass
         if stage_tags is not None:
             # The locked parent still greys arrow-containing prose in insert.
             # Restore only this row's actual-stage tag after that formatter.
@@ -2632,8 +3931,8 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
             self._v7609_prebuy_daily_cache = cache
             key = (symbol, now.date())
             saved = cache.get(key)
-            if _PREBUY_RULES.needs_daily(raw, now) and (saved is None or
-                    (saved[1] is None and (now-saved[0]).total_seconds() >= 60)):
+            # V7622: 눌림목 경로가 전일 종가를 쓰므로 종목당 하루 한 번은 일봉을 받는다(실패 시 60초 뒤 재시도).
+            if saved is None or (saved[1] is None and (now-saved[0]).total_seconds() >= 60):
                 cache[key] = (now, None)
                 try:
                     daily = self.client.get_daily_bars(symbol, limit=3)
@@ -2645,11 +3944,12 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
                             and str(b.symbol).zfill(6) == symbol]
                 if previous and key[1] == now.date():
                     day = max(previous, key=lambda b: b.trading_date)
-                    cache[key] = (now, (day.trading_date.isoformat(), float(day.volume)))
+                    cache[key] = (now, (day.trading_date.isoformat(), float(day.volume), float(day.close)))
                 saved = cache.get(key)
             prior = saved[1] if saved else None
             proof = _PREBUY_RULES.evaluate(raw, now=now,
-                previous_day=prior[0] if prior else None, previous_volume=prior[1] if prior else None)
+                previous_day=prior[0] if prior else None, previous_volume=prior[1] if prior else None,
+                previous_close=prior[2] if prior and len(prior) > 2 else None)
             if proof is None:
                 return
             identity = _V7600_STATE.make_signal_id(engine_version=VERSION, symbol=symbol,
@@ -2677,12 +3977,33 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
                     self._v76_strict_prebuy[symbol] = datetime.fromisoformat(proof['data_time'])
                     self._v76_strict_interest.pop(symbol, None)
                     self._save_supply_potential()
-                if not proof['buy'] or quote is None or not self._v7609_current_prebuy_approved(symbol, now):
+                if not proof['buy'] or not self._v7609_current_prebuy_approved(symbol, now):
                     return
+                if quote is None:
+                    # V7613: 10초 후보 감시에서 매수 신호가 나면 그 자리에서 시세를 받아 주문 경로로 보낸다.
+                    # (기존: 시세 인자가 없어 신호를 버림 → 4일간 매수신호 16건 미체결)
+                    # V7614: 신규매수 금지 시간대이거나 같은 신호봉으로 이미 시도했으면 시세 조회를 반복하지 않는다.
+                    if _ENTRY_POLICY.blocked_window(now):
+                        return
+                    seen = getattr(self, '_v7614_poll_attempted', None)
+                    if seen is None:
+                        seen = self._v7614_poll_attempted = {}
+                    attempt_key = str(proof.get('data_time') or proof.get('episode') or '')
+                    if seen.get(symbol) == attempt_key:
+                        return
+                    seen[symbol] = attempt_key
+                    try:
+                        quote = self.client.get_quote(symbol)
+                    except Exception as exc:
+                        self.logger.warning('V7613 후보감시 매수시세 대기 %s | %s', symbol, type(exc).__name__)
+                        return
+                    self.logger.warning('V7613 후보감시 매수신호 주문경로 연결 %s | %s',
+                                        self._label(symbol), proof['reason'])
                 stock_bars = [SimpleNamespace(**dict(b, timestamp=datetime.fromisoformat(b['timestamp'])))
                               for b in proof['bars']]
+                _V7616_CONTEXT.route_entry = True
                 market_ok, reason = self._market_gate_v76(stock_bars=stock_bars,
-                    allow_relative_strength=proof['route'] == 'BOTTOM_MA5')
+                    allow_relative_strength=proof['route'] in V7612_RELATIVE_STRENGTH_ROUTES)
                 if (getattr(self, '_v76_market_regime', 'NORMAL') == 'SHARP_DECLINE'
                         and not _PREBUY_RULES.sharp_market_entry_allowed(proof)):
                     market_ok, reason = False, 'SHARP_MARKET_SHORT_BULL_REQUIRED'
@@ -2691,7 +4012,7 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
                         datetime.fromisoformat(proof['data_time']), now, 'REQUESTED_PREBUY_MARKET')
                     return
                 stamp = datetime.fromisoformat(proof['data_time'])
-                slot = 9 if proof['route'] == 'BREAKOUT' else 6
+                slot = V7612_ROUTE_SLOT.get(proof['route'], 6)
                 if self._v76_order_bar.get((symbol, slot)) == stamp:
                     return
                 window = _ENTRY_POLICY.blocked_window(datetime.now(KST))
@@ -2705,8 +4026,18 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
                 price = float(getattr(quote, 'price', 0) or 0)
                 if not math.isfinite(price) or price <= 0:
                     return
-                pattern = BREAKOUT_PATTERN if slot == 9 else PATTERN
-                signal = _V753.Signal(symbol, _V753.SignalAction.BUY, 152.0 if slot == 9 else 110.0,
+                # V7630: 주문 직전 확인 — 현재가가 이미 신호봉 저가 아래면 신호가 깨진 것이므로 사지 않는다.
+                signal_low = _v7630_signal_low(proof)
+                if signal_low > 0 and price < signal_low:
+                    key = (symbol, str(proof.get('data_time', '')))
+                    if getattr(self, '_v7630_guard_logged', None) != key:
+                        self._v7630_guard_logged = key
+                        self.logger.warning('V7630 매수 취소(신호봉 저가 이탈) %s | 현재가 %.0f < 신호봉 저가 %.0f | %s',
+                                            self._label(symbol), price, signal_low, proof['reason'])
+                    return
+                pattern = V7612_SLOT_PATTERN.get(slot, PATTERN)
+                signal = _V753.Signal(symbol, _V753.SignalAction.BUY,
+                    152.0 if slot == 9 else (130.0 if slot in (7, 8) else 110.0),
                     f"{_PREBUY_RULES.RULE_ID}|{proof['reason']}|PAPER_ONLY", price, stamp, pattern,
                     V7609_FIXED_STOP_LOSS_PCT, V7609_TAKE_PROFIT_PCT)
                 self.latest_signals[symbol] = signal
@@ -2714,6 +4045,459 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
                 self._attempt_entry(signal)
         except Exception as exc:
             self.logger.warning('V7609 요청 매수직전 판정 보류 %s | %s', symbol, type(exc).__name__)
+        finally:
+            _V7616_CONTEXT.route_entry = False
+
+    def _market_entry_allowed(self) -> tuple[bool, str]:
+        allowed, reason = super()._market_entry_allowed()
+        if allowed or not getattr(_V7616_CONTEXT, "route_entry", False):
+            return allowed, reason
+        text = str(reason)
+        state = next((name for name in V7616_RELAXED_MARKET_STATES
+                      if text.startswith(f"시장신규매수보류_{name}_")), "")
+        if state:
+            self.logger.warning("V7616 시장%s 통과(패턴매수 경로) | %s", state, text[:120])
+            return True, f"V7616_시장{state}통과|{text}"
+        return allowed, reason
+
+    # ------------------------------------------------------------ V7625 거래대금 부족 제외
+    def _v7625_traded_value(self, symbol: str, now: datetime) -> float | None:
+        """오늘 누적 거래대금(원). 받아 둔 1분봉 합계와 후보 순위 자료 중 큰 값. 모르면 None."""
+        symbol = str(symbol).zfill(6)
+        today = now.astimezone(KST).date()
+        values = []
+        total = 0.0
+        for bar in list(getattr(getattr(self, "client", None), "v7580_raw_cache", {}).get(symbol, []) or []):
+            stamp = getattr(bar, "timestamp", None)
+            if isinstance(stamp, datetime) and (stamp if stamp.tzinfo else stamp.replace(tzinfo=KST)).astimezone(KST).date() == today:
+                total += max(0.0, float(getattr(bar, "volume", 0) or 0)) * max(0.0, float(getattr(bar, "close", 0) or 0))
+        if total > 0:
+            values.append(total)
+        meta = getattr(self, "candidate_meta", {}).get(symbol)
+        if meta is not None:
+            ranked = float(getattr(meta, "volume", 0) or 0) * abs(float(getattr(meta, "price", 0) or 0))
+            if ranked > 0:
+                values.append(ranked)
+        quote = getattr(self, "latest_quotes", {}).get(symbol)
+        if quote is not None:
+            quoted = float(getattr(quote, "cumulative_value", 0) or 0)
+            if quoted > 0:
+                values.append(quoted)
+        return max(values) if values else None
+
+    def _v7625_thin_reason(self, symbol: str, now: datetime | None = None) -> str:
+        now = (now or datetime.now(KST)).astimezone(KST)
+        minimum = next((value for start, value in V7625_MIN_VALUE_STEPS if now.time() >= start), 0.0)
+        if minimum <= 0 or now.time() >= dt_time(15, 30):
+            return ""
+        value = self._v7625_traded_value(symbol, now)
+        if value is None or value >= minimum:
+            return ""
+        return f"누적 거래대금 {value / 1e8:.1f}억 < {minimum / 1e8:.0f}억({now:%H}시 기준) 거래부족"
+
+    # ------------------------------------------------------------ V7628 일봉 종가배팅
+    def _v7628_load(self, now: datetime) -> dict[str, Any]:
+        state = getattr(self, "_v7628_state", None)
+        today = now.date().isoformat()
+        if isinstance(state, dict) and state.get("day") == today:
+            return state
+        state = {"day": today, "phase": "init", "todo": [], "signals": [], "bought": [], "checked": 0,
+                 "stale": 0, "next": 0.0}
+        try:
+            saved = json.loads(V7628_STATE_FILE.read_text(encoding="utf-8"))
+            if isinstance(saved, dict) and saved.get("day") == today:
+                state["bought"] = [str(x) for x in saved.get("bought", [])]
+                if saved.get("phase") == "done":
+                    state["phase"] = "done"
+        except (OSError, ValueError, TypeError):
+            pass
+        self._v7628_state = state
+        return state
+
+    def _v7628_persist(self, state: dict[str, Any]) -> None:
+        V7628_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temp = V7628_STATE_FILE.with_suffix(".tmp")
+        temp.write_text(json.dumps({"day": state["day"], "phase": state["phase"], "bought": state["bought"],
+                                    "checked": state["checked"],
+                                    "signals": [{k: v for k, v in item.items() if k != "rows"} for item in state["signals"]],
+                                    "saved_at": datetime.now(KST).isoformat()}, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+        temp.replace(V7628_STATE_FILE)
+
+    def _v7628_daily_rows(self, symbol: str) -> list[dict[str, Any]]:
+        return [{"d": bar.trading_date.strftime("%Y%m%d"), "o": float(bar.open), "h": float(bar.high),
+                 "l": float(bar.low), "c": float(bar.close), "v": float(bar.volume)}
+                for bar in self.client.get_daily_bars(symbol, limit=45)]
+
+    def _v7628_step(self, now: datetime) -> None:
+        """15:00부터 거래대금 상위 종목의 일봉을 한 번에 두 종목씩 검사하고, 15:15~15:19에 신호 종목을 산다."""
+        if not _CBET28.ENABLED:
+            return
+        now = now.astimezone(KST)
+        if not _CBET28.scan_window(now):
+            return
+        state = self._v7628_load(now)
+        if state["phase"] == "done" or time.monotonic() < state["next"]:
+            return
+        state["next"] = time.monotonic() + 0.7
+        if state["phase"] == "init":
+            if self._v7619_conservative(now)[0]:
+                state["phase"] = "done"
+                self.logger.warning("V7628 종가배팅 오늘 쉼 | 초보수 모드(신규매수 중단)")
+                self._v7628_persist(state)
+                return
+            found: dict[str, tuple[str, float]] = {}
+            for market in ("001", "101"):
+                body = {"mrkt_tp": market, "mang_stk_incls": "0",
+                        "stex_tp": str(getattr(self.client.settings, "stex_tp", "1") or "1")}
+                for page in self.client._rank_pages("ka10032", body, max_pages=8):
+                    for row in page.get("trde_prica_upper") or []:
+                        picked = _CBET28.prefilter(row) if isinstance(row, dict) else None
+                        if picked:
+                            found[picked[0]] = (picked[1], picked[2])
+            skip = set(getattr(self.broker, "positions", {})) | set(getattr(self, "buy_blocked", set())) \
+                | set(getattr(self, "_v7587_excluded", {}))
+            ordered = sorted(((code, name, value) for code, (name, value) in found.items() if code not in skip),
+                             key=lambda item: -item[2])[:_CBET28.MAX_CANDIDATES]
+            state["todo"] = ordered
+            state["phase"] = "scan"
+            self.logger.warning("V7628 종가배팅 일봉 검색 시작 | 거래대금 상위에서 추린 후보 %d종목", len(ordered))
+            return
+        if state["phase"] == "scan":
+            for _ in range(2):
+                if not state["todo"]:
+                    break
+                code, name, value = state["todo"].pop(0)
+                state["checked"] += 1
+                try:
+                    rows = self._v7628_daily_rows(code)
+                except Exception:
+                    continue
+                if not rows or rows[-1]["d"] != now.strftime("%Y%m%d"):
+                    state["stale"] += 1
+                    continue
+                result = _CBET28.signal(rows)
+                if result is None or _CBET28.hot_gain(rows, V7621_HOT_DAYS) >= V7621_HOT_GAIN:
+                    continue
+                state["signals"].append({"symbol": code, "name": name, "value": float(value), "rows": rows,
+                                         "reason": result["reason"]})
+            if state["checked"] >= 10 and state["stale"] == state["checked"]:
+                state["phase"] = "done"       # 오늘 일봉이 없는 날(휴장)
+                self.logger.warning("V7628 종가배팅 오늘 쉼 | 오늘 일봉 없음(휴장)")
+                self._v7628_persist(state)
+                return
+            if not state["todo"] or _CBET28.buy_window(now):
+                state["signals"].sort(key=lambda item: -item["value"])
+                state["phase"] = "buy"
+                self.logger.warning("V7628 종가배팅 검색 끝 | 검사 %d종목 · 신호 %d종목: %s", state["checked"],
+                                    len(state["signals"]), ", ".join(x["name"] for x in state["signals"][:12]))
+                self._v7628_persist(state)
+            return
+        if state["phase"] == "buy":
+            if not _CBET28.buy_window(now):
+                return
+            if len(state["bought"]) >= _CBET28.MAX_PER_DAY or not state["signals"]:
+                state["phase"] = "done"
+                self.logger.warning("V7628 종가배팅 오늘 매수 끝 | %d종목", len(state["bought"]))
+                self._v7628_persist(state)
+                return
+            item = state["signals"].pop(0)
+            if item["symbol"] in state["bought"] or item["symbol"] in self.broker.positions:
+                return
+            if self._v7628_buy(item, now):
+                state["bought"].append(item["symbol"])
+            self._v7628_persist(state)
+
+    def _v7628_buy(self, item: dict[str, Any], now: datetime) -> bool:
+        symbol = str(item["symbol"])
+        committed = self._v7613_committed()
+        if committed + _CBET28.NOTIONAL > _SPLIT13.BUDGET_LIMIT + 1.0:
+            self.logger.warning("V7628 종가배팅 건너뜀 %s | 운용한도(실제 매입 %s)", item["name"], f"{committed:,.0f}")
+            return False
+        try:
+            fresh = self.client.get_quote(symbol)
+            quote = self.client.get_orderbook(symbol, fresh, side="buy")
+            self.latest_quotes[symbol] = quote
+        except Exception as exc:
+            self.logger.warning("V7628 종가배팅 시세보류 %s | %s", item["name"], type(exc).__name__)
+            return False
+        if quote.best_ask is None or float(quote.best_ask) <= 0 or float(quote.price) <= 0:
+            return False
+        # 매수 직전 현재가로 오늘 봉을 고쳐 패턴이 그대로인지 다시 확인한다.
+        rows = [dict(row) for row in item["rows"]]
+        price = float(quote.price)
+        rows[-1].update(c=price, h=max(rows[-1]["h"], price), l=min(rows[-1]["l"], price))
+        result = _CBET28.signal(rows)
+        if result is None:
+            self.logger.warning("V7628 종가배팅 취소 %s | 매수 직전 가격 %s원에서 패턴 깨짐", item["name"], f"{price:,.0f}")
+            return False
+        expected = _V753.align_stock_price(float(quote.best_ask) * (1.0 + self.settings.slippage_pct), upward=True)
+        quantity = math.floor(_CBET28.NOTIONAL / max(1.0, expected))
+        if quantity < 1 or expected * quantity * 1.001 > float(self.broker.cash):
+            self.logger.warning("V7628 종가배팅 건너뜀 %s | 1주 가격이 50만원 초과 또는 예수금 부족", item["name"])
+            return False
+        reason = f"V7628|{result['reason']}|PAPER_ONLY"
+        signal = _V753.Signal(symbol, _V753.SignalAction.BUY, 120.0, reason, price, datetime.now(KST),
+                              _CBET28.PATTERN, _CBET28.HARD_STOP, _SPLIT13.FIRST_TARGET)
+        identity = self._v7609_make_order_identity(side="BUY", symbol=symbol, source="AUTO_CLOSE_BET",
+                                                   source_id=f"V7628|{now:%Y%m%d}")
+
+        def execute() -> Any:
+            fill = self.broker.buy(symbol, quantity, quote, reason, stop_loss_pct=_CBET28.HARD_STOP,
+                                   take_profit_pct=_SPLIT13.FIRST_TARGET, pattern=_CBET28.PATTERN)
+            self.strategy.mark_entry(symbol)
+            self.last_position_observation_at[symbol] = fill.timestamp
+            return fill
+
+        try:
+            with self._v7609_stage_lock:
+                fill = self._v7609_run_order_intent(
+                    identity, {"symbol": symbol, "quantity": int(quantity), "data_time": now.isoformat()},
+                    execute, duplicate_result=None)
+                if fill is None:
+                    return False
+                self._v7613_register_first(symbol, signal)
+                split = self._v7613_info(symbol)
+                if split is not None:
+                    split.update(close_bet=True, buy_day=now.date().isoformat(), open_checked="",
+                                 watch="내일 09:00 시가 수익이면 매도 · 아니면 +2% 대기 · 장마감 정리 없음(다음날로 이월) · 자동손절 없음")
+                    self._v7613_save()
+                self._print_buy(fill, self.broker.positions[symbol], signal)
+        except Exception as exc:
+            self.logger.warning("V7628 종가배팅 매수 실패 %s | %s: %s", item["name"], type(exc).__name__, exc)
+            return False
+        self.logger.warning("V7628 종가배팅 매수 %s | %d주 %s원 | %s", self._label(symbol), int(fill.quantity),
+                            f"{float(fill.price):,.0f}", result["reason"])
+        return True
+
+    def _v7628_open_sell(self, symbol: str, quote: Any, detection_time: datetime | None) -> bool:
+        """종가배팅 다음날 09:00 시가: 비용 빼고 수익이면 바로 매도, 아니면 그대로 두고 +2%·15:19를 기다린다."""
+        split = self._v7613_info(symbol)
+        if not split or not split.get("close_bet") or symbol in self._gem_exit_inflight:
+            return False
+        now = (detection_time or datetime.now(KST)).astimezone(KST)
+        if not _CBET28.open_sell_due(now, str(split.get("buy_day", "")), str(split.get("open_checked", ""))):
+            return False
+        position = self.broker.positions.get(symbol)
+        price = float(getattr(quote, "price", 0) or 0)
+        if position is None or not math.isfinite(price) or price <= 0:
+            return False
+        split["open_checked"] = now.date().isoformat()
+        commission, tax = self._v7609_cost_rates()
+        net = _EXIT_POLICY.net_return(position, price, commission, tax)
+        if net <= 0:
+            split["watch"] = f"시가 {net:+.1%}(수익 아님) → +2% 대기 · 장마감 정리 없음(다음날로 이월) · 자동손절 없음"
+            self._v7613_save()
+            self.logger.warning("V7628 종가배팅 시가 확인 %s | %s원 %+.2f%% → 보유(장중 +2%% 대기)", self._label(symbol),
+                                f"{price:,.0f}", net * 100)
+            return False
+        self._v7613_save()
+        return self._v7609_execute_fixed_stop_locked(
+            symbol, quote, detected_at=now, source="V7628_OPEN_PROFIT",
+            trigger_price=price, reason="종가배팅 다음날 시가 수익매도")
+
+    # ------------------------------------------------------------ V7621 최근 3일 급등 제외
+    def _v7621_hot_gain(self, symbol: str) -> float | None:
+        """어제 종가 / 4거래일 전 종가 - 1. 하루 한 번 일봉 조회(실패하면 60초 뒤 다시, 그동안은 판정 안 함)."""
+        symbol = str(symbol).zfill(6)
+        today = datetime.now(KST).date()
+        cache = getattr(self, "_v7621_cache", None)
+        if cache is None:
+            cache = self._v7621_cache = {}
+        saved = cache.get((symbol, today))
+        if saved is not None and (saved[1] is not None or time.monotonic() - saved[0] < 60.0):
+            return saved[1]
+        gain = None
+        try:
+            daily = [bar for bar in self.client.get_daily_bars(symbol, limit=V7621_HOT_DAYS + 4)
+                     if bar.trading_date < today and float(bar.close) > 0]
+            daily.sort(key=lambda bar: bar.trading_date)
+            if len(daily) >= V7621_HOT_DAYS + 1:
+                gain = float(daily[-1].close) / float(daily[-1 - V7621_HOT_DAYS].close) - 1.0
+        except Exception as exc:
+            self.logger.warning("V7621 일봉 확인대기 %s | %s (이번엔 급등 판정 없이 진행)", self._label(symbol), type(exc).__name__)
+        cache[(symbol, today)] = (time.monotonic(), gain)
+        return gain
+
+    def _v7621_hot_reason(self, symbol: str) -> str:
+        gain = self._v7621_hot_gain(symbol)
+        if gain is None or gain < V7621_HOT_GAIN:
+            return ""
+        return f"최근{V7621_HOT_DAYS}일 {gain:+.0%} 급등 제외"
+
+    # ------------------------------------------------------------ V7620 형 지시
+    def _v7620_data(self) -> dict[str, Any]:
+        cached = getattr(self, "_v7620_cache", None)
+        if isinstance(cached, dict):
+            return cached
+        data: dict[str, Any] = {"positions": {}, "market_weak": {}}
+        try:
+            loaded = json.loads(V7620_OVERRIDE_FILE.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data["positions"] = dict(loaded.get("positions") or {})
+                data["market_weak"] = dict(loaded.get("market_weak") or {})
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            self.logger.warning("V7620 형 지시 원장 읽기 실패(빈 상태로 시작) | %s", type(exc).__name__)
+        self._v7620_cache = data
+        return data
+
+    def _v7620_save(self, data: dict[str, Any]) -> None:
+        self._v7620_cache = data
+        V7620_OVERRIDE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temp = V7620_OVERRIDE_FILE.with_suffix(".tmp")
+        temp.write_text(json.dumps({"saved_at": datetime.now(KST).isoformat(), **data},
+                                   ensure_ascii=False, indent=2), encoding="utf-8")
+        temp.replace(V7620_OVERRIDE_FILE)
+
+    def _v7620_position_override(self, symbol: str) -> dict[str, Any] | None:
+        item = self._v7620_data().get("positions", {}).get(str(symbol).strip().zfill(6))
+        return item if isinstance(item, dict) else None
+
+    def _v7620_apply(self, command: dict[str, Any]) -> str:
+        """GUI 형 지시를 엔진 스레드에서 적용한다(주문은 기존 경로만 사용)."""
+        kind = str(command.get("kind", ""))
+        symbol = str(command.get("symbol", "") or "").strip()
+        name = str(command.get("name", "") or symbol)
+        data = self._v7620_data()
+        now = datetime.now(KST)
+        if kind == "V7620_MARKET_WEAK":
+            data["market_weak"] = {"date": now.strftime("%Y%m%d"), "at": now.isoformat(), "note": str(command.get("note", ""))}
+            self._v7620_save(data)
+            self._v7619_state = (True, "형 지시: 오늘 장 약함")
+            self.logger.warning("V7620 형 지시: 오늘 장 약함 → 초보수 모드 켬 | %s", str(command.get("note", ""))[:80])
+            return "오늘 초보수 모드를 켰습니다. 신규 1차·추가매수는 멈추고 매도는 그대로 합니다(장 끝나면 자동 해제)."
+        if kind == "V7620_MARKET_OK":
+            data["market_weak"] = {}
+            self._v7620_save(data)
+            self._v7619_checked_mono = 0.0
+            self._v7619_state = (False, "")
+            latch = getattr(self, "_v7619_latch", None)
+            if latch is not None:
+                latch.last_trigger = None
+            self.logger.warning("V7620 형 지시: 초보수 모드 해제")
+            return "초보수 모드를 해제했습니다. (지수·외국인 자동 조건이 다시 맞으면 자동으로 켜집니다)"
+        if not re.fullmatch(r"\d{6}", symbol):
+            raise ValueError("종목코드 6자리가 필요합니다")
+        if kind == "V7620_THEME_WATCH":
+            self._manual_add_watch(symbol, name)
+            return f"{name} 관심종목 우선 감시에 올렸습니다(우리 패턴이 맞을 때만 매수)."
+        if kind == "V7620_RELEASE":
+            removed = data["positions"].pop(symbol, None)
+            self._v7620_save(data)
+            if symbol in getattr(self.broker, "positions", {}):
+                self._enforce_gem_orders(symbol)
+            return f"{name} 형 지시를 해제했습니다. 원래 로직(목표·15:19 정리)으로 돌아갑니다." if removed else f"{name}에 걸린 형 지시가 없습니다."
+        if kind == "V7620_HOLD_PCT":
+            position = getattr(self.broker, "positions", {}).get(symbol)
+            if position is None:
+                raise ValueError(f"{name}은(는) 보유 중이 아닙니다")
+            pct = float(command.get("pct", 0) or 0)
+            if not _CMD20.MIN_PCT <= pct <= _CMD20.MAX_PCT:
+                raise ValueError("목표 %가 범위 밖입니다(0.5%~30%)")
+            data["positions"][symbol] = {"name": name, "target_pct": pct, "skip_eod": True,
+                                         "created_at": now.isoformat(), "note": str(command.get("note", ""))}
+            self._v7620_save(data)
+            commission, tax = self._v7609_cost_rates()
+            cost = _EXIT_POLICY.cost_per_share(position, commission)
+            target = _CMD20.target_price(cost, pct, commission, tax, _V753.align_stock_price, _V753.stock_tick_size)
+            self._enforce_gem_orders(symbol)              # 목표가 재계산 경로(분할·일반 보유 모두)
+            self.broker.save_state()
+            self.logger.warning("V7620 형 지시 %s 목표 평단+%.1f%% → %.0f원 · 장마감 정리 없음(다음날로 이월) 생략 · 손절 유지",
+                                self._label(symbol), pct * 100, target)
+            return (f"{name} 목표를 평단 +{pct:.1%}({target:,.0f}원)로 바꿨습니다. "
+                    f"15:19 정리 없이 다음날까지 보유하고, PAPER 자동손절은 없습니다.")
+        raise ValueError(f"지원하지 않는 형 지시: {kind}")
+
+    # ------------------------------------------------------------ V7619 초보수 모드
+    def _v7619_conservative(self, now: datetime | None = None) -> tuple[bool, str]:
+        """지수 60분 연속하락+반등실패 + 외국인 현물 대량 순매도면 신규1차·추가매수 중단(매도는 그대로)."""
+        if not _CONS19.ENABLED:
+            return False, ""
+        now = (now or datetime.now(KST)).astimezone(KST)
+        latch = getattr(self, "_v7619_latch", None)
+        if latch is None:
+            latch = self._v7619_latch = _CONS19.Latch()
+            self._v7619_checked_mono = 0.0
+            self._v7619_state = (False, "")
+        if not (_CONS19.SESSION_START <= now.time() < _CONS19.SESSION_END):
+            return False, ""
+        manual = self._v7620_data().get("market_weak") or {}
+        if str(manual.get("date", "")) == now.strftime("%Y%m%d"):
+            return True, f"형 지시: 오늘 장 약함({str(manual.get('at', ''))[11:16]}) — 신규1차·추가매수 중단"
+        mono = time.monotonic()
+        if mono - float(getattr(self, "_v7619_checked_mono", 0.0)) < _CONS19.CHECK_SECONDS:
+            return self._v7619_state
+        self._v7619_checked_mono = mono
+        client = getattr(self, "client", None)
+        try:
+            codes = tuple(getattr(getattr(self, "v757_config", None), "market_proxy_codes", ("069500", "229200")))
+            results = [_CONS19.index_falling(client.get_minute_bars(code, limit=90, completed_only=True), now)
+                       for code in codes]
+        except Exception as exc:
+            results = [(False, f"지수자료오류 {type(exc).__name__}")]
+        foreign = None
+        if any(ok for ok, _text in results) and hasattr(client, "_v7628_query"):
+            try:
+                pages = []
+                for market in ("0", "1"):
+                    data = client._v7628_query(
+                        api_id="ka10051", endpoint="/api/dostk/sect",
+                        body={"mrkt_tp": market, "amt_qty_tp": "0", "base_dt": now.strftime("%Y%m%d"), "stex_tp": "1"},
+                        required_any=("inds_netprps",))
+                    pages.append(list(data.get("inds_netprps") or []))
+                foreign = _CONS19.foreign_total_eok(pages)
+            except Exception as exc:
+                self.logger.warning("V7619 외국인 현물 자료 조회 실패(초보수 판정 안 함) | %s", type(exc).__name__)
+        triggered, reason = _CONS19.decide(results, foreign)
+        before = bool(self._v7619_state[0])
+        active = latch.update(triggered, reason, now)
+        self._v7619_state = (active, latch.reason if active else reason)
+        if active != before:
+            self.logger.warning("V7619 초보수모드 %s | %s", "켜짐(신규1차·추가매수 중단)" if active else "꺼짐", self._v7619_state[1][:160])
+        return self._v7619_state
+
+    def _v7619_blocked(self, symbol: str, what: str, now: datetime | None = None) -> bool:
+        active, reason = self._v7619_conservative(now)
+        if active:
+            self._show_throttled_error(
+                f"v7619:{what}", f"V7619 초보수모드 {what} 중단 {self._label(symbol)} | {reason[:120]}", 60.0)
+        return active
+
+    # ------------------------------------------------------------ V7619 최근5분 자료 보강
+    def _liquidity_gate(self, signal: Any, quote: Any) -> tuple[bool, str]:
+        ok, reason = super()._liquidity_gate(signal, quote)
+        if ok or reason != "최근5분자료부족" or getattr(signal, "pattern", "") == "매물소진50초선진입":
+            return ok, reason
+        # 새로 감시에 들어온 종목은 전략 봉이 비어 있다 → 이미 받아 둔 오늘 완성 1분봉으로 같은 기준 계산
+        symbol = str(getattr(signal, "symbol", ""))
+        today = datetime.now(KST).date()
+        bars = [bar for bar in self._v7613_regular_bars(
+                    list(getattr(self.client, "v7580_raw_cache", {}).get(symbol, [])))
+                if isinstance(getattr(bar, "timestamp", None), datetime)
+                and getattr(bar, "timestamp").astimezone(KST).date() == today]
+        if len(bars) < 5:
+            return ok, reason
+        recent5_value = sum(max(0, int(bar.volume)) * max(0.0, float(bar.close)) for bar in bars[-5:])
+        signal_bar_value = max(0, int(bars[-1].volume)) * max(0.0, float(bars[-1].close))
+        cumulative_value = max(0.0, float(quote.cumulative_value),
+                               float(quote.cumulative_volume) * max(0.0, float(quote.price)))
+        minimum_cumulative = self._minimum_cumulative_value(datetime.now(KST))
+        if cumulative_value < minimum_cumulative:
+            return False, f"누적거래대금부족_{cumulative_value/1e8:.1f}억<{minimum_cumulative/1e8:.1f}억"
+        if recent5_value < self.min_recent5_value:
+            return False, f"최근5분거래대금부족_{recent5_value/1e8:.1f}억"
+        if signal_bar_value < self.min_signal_bar_value:
+            return False, f"신호봉거래대금부족_{signal_bar_value/1e8:.1f}억"
+        same_time = self.strategy.same_time_volume_ratio.get(symbol, 0.0)
+        exceptional = cumulative_value >= minimum_cumulative * 2.0 and recent5_value >= self.min_recent5_value * 2.0
+        if same_time < self.min_same_time_volume_ratio and not exceptional:
+            if same_time <= 0:
+                return False, "전일동시간거래량확인불가"
+            return False, f"전일동시간거래량약함_x{same_time:.2f}"
+        return True, (f"유동성정상(1분봉보강) 누적={cumulative_value/1e8:.1f}억 "
+                      f"최근5분={recent5_value/1e8:.1f}억 신호봉={signal_bar_value/1e8:.1f}억")
 
     def _v7609_try_volume_prebuy(self, symbol: str, raw: list[Any], now: datetime) -> datetime:
         """One evidence-checked direct PREBUY route, never an order route."""
@@ -2759,6 +4543,17 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
             evidence = _VOLUME5.evaluate(raw, now=now, previous_day=saved[1][0], previous_close=saved[1][1])
             if evidence is None:
                 return now
+            if V7611_VOLUME5_AS_OBSERVATION:
+                # V7611: 5배 급등은 관찰 신호다. 관심·매수직전은 기존 조정/바닥 판정이 맡는다.
+                if not self._v7588_phase.get(symbol):
+                    multiple = float(evidence.get("volume_multiple", 0.0) or 0.0)
+                    at = str(evidence.get("data_time", ""))[11:16]
+                    self._v7588_publish(
+                        symbol, "OBSERVED", "관찰후보",
+                        f"V7594:관찰편입=5배급등거래x{multiple:.1f}·{at}·전일종가상회",
+                        now,
+                    )
+                return now
             lock = getattr(self, "_v7609_stage_lock", None)
             if lock is None:
                 lock = self._v7609_stage_lock = threading.RLock()
@@ -2800,6 +4595,9 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
     def _v7609_try_early_volume_buy(self, symbol: str, raw: list[Any], now: datetime) -> None:
         """Explicit PAPER partial-bar exception; all other strategies stay completed-only."""
         symbol = str(symbol).zfill(6)
+        if not _ENTRY_POLICY.EARLY_VOLUME_BUY_ENABLED:
+            # V7611: 주문이 꺼진 조기매수는 매수직전 칸을 차지하지 않는다.
+            return
         manager = self._v7609_state_manager_obj()
         if (symbol in self.broker.positions or symbol in self.pending_entries
                 or symbol in self._v7587_excluded
@@ -2943,6 +4741,8 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
             snapshots[symbol] = (time.monotonic(), completed)
             now = self._v7609_try_volume_prebuy(symbol, completed, now)
             self._v7609_requested_prebuy(symbol, completed, now)
+            self._v7612_note_carry(symbol, completed, now)
+            self._v7612_observe_carry(symbol, now)
             self._v7609_stage_only_admission(symbol, completed, now)
             self._v7609_update_early_observation(symbol, completed, now)
             try:
@@ -2952,6 +4752,145 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
             self._v7609_try_early_volume_buy(symbol, raw, now)
         except Exception as exc:
             self.logger.warning("V7609 거래량 실험 판정 보류 %s | %s", symbol, type(exc).__name__)
+
+    # ------------------------------------------------------------ V7612 패턴A 이월
+    def _v7612_load_carry_file(self) -> dict[str, Any]:
+        try:
+            data = json.loads(V7612_CARRY_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _v7612_carry_symbols(self, now: datetime) -> dict[str, dict[str, Any]]:
+        """가장 최근 거래일(오늘 이전, 5일 이내)에 기록된 패턴A 이월 후보."""
+        cache = getattr(self, "_v7612_carry_cache", None)
+        today = now.date()
+        if cache and cache[0] == today and time.monotonic() - cache[1] < 60:
+            return cache[2]
+        data = self._v7612_load_carry_file()
+        result: dict[str, dict[str, Any]] = {}
+        days = [d for d in data if isinstance(d, str) and d < today.isoformat()]
+        if days:
+            latest = max(days)
+            try:
+                age = (today - datetime.fromisoformat(latest).date()).days
+            except ValueError:
+                age = 999
+            rows = data.get(latest)
+            if age <= _PATTERN12.A_CARRY_MAX_AGE_DAYS and isinstance(rows, dict):
+                for raw_symbol, info in rows.items():
+                    symbol = str(raw_symbol).strip().upper().zfill(6)
+                    if _v7612_is_code(symbol) and isinstance(info, dict):
+                        result[symbol] = info
+        self._v7612_carry_cache = (today, time.monotonic(), result)
+        return result
+
+    def _v7612_note_carry(self, symbol: str, raw: list[Any], now: datetime) -> None:
+        """15:00 이후 패턴A 셋업이 갖춰진 종목을 다음 날 후보로 기록한다(주문 없음)."""
+        try:
+            setup = _PATTERN12.end_of_day_setup(raw, now=now)
+        except Exception as exc:
+            self.logger.warning("V7612 이월후보 판정 보류 %s | %s", symbol, type(exc).__name__)
+            return
+        if setup is None:
+            return
+        symbol = str(symbol).zfill(6)
+        day = now.date().isoformat()
+        noted = getattr(self, "_v7612_carry_noted", set())
+        self._v7612_carry_noted = noted
+        if (day, symbol) in noted:
+            return
+        data = self._v7612_load_carry_file()
+        data.setdefault(day, {})[symbol] = {
+            "name": str(self.names.get(symbol, symbol)),
+            "box_top": round(float(setup["box_top"]), 2),
+            "pull_low": round(float(setup["pull_low"]), 2),
+            "rise": round(float(setup["rise"]), 4),
+            "retrace": round(float(setup["retrace"]), 4),
+            "dry_ratio": round(float(setup["dry_ratio"]), 4),
+            "noted_at": now.isoformat(),
+        }
+        for key in sorted(data)[:-7]:
+            data.pop(key, None)
+        try:
+            V7612_CARRY_FILE.parent.mkdir(parents=True, exist_ok=True)
+            tmp = V7612_CARRY_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+            os.replace(tmp, V7612_CARRY_FILE)
+        except OSError as exc:
+            self.logger.warning("V7612 이월후보 저장 실패 %s | %s", symbol, type(exc).__name__)
+            return
+        noted.add((day, symbol))
+        self._v7612_carry_cache = None
+        self.logger.warning(
+            "V7612 패턴A 이월후보 등록 %s | 상승+%.0f%% 되돌림%.0f%% 마른거래%.0f%% 박스상단 %.0f",
+            self._label(symbol), setup["rise"] * 100, setup["retrace"] * 100,
+            setup["dry_ratio"] * 100, setup["box_top"],
+        )
+        if not self._v7588_phase.get(symbol):
+            self._v7588_publish(
+                symbol, "OBSERVED", "관찰후보",
+                f"V7594:관찰편입=패턴A이월후보·상승+{setup['rise']:.0%}·되돌림{setup['retrace']:.0%}"
+                f"·마른거래{setup['dry_ratio']:.0%}",
+                now,
+            )
+
+    def _v7612_observe_carry(self, symbol: str, now: datetime) -> None:
+        """이월 당일: 후보 종목을 관찰칸에 표시(이미 단계가 있으면 그대로)."""
+        if not _PATTERN12.CARRY_ENABLED:
+            return
+        symbol = str(symbol).zfill(6)
+        try:
+            info = self._v7612_carry_symbols(now).get(symbol)
+        except Exception:
+            return
+        if info is None or self._v7588_phase.get(symbol):
+            return
+        self._v7588_publish(
+            symbol, "OBSERVED", "관찰후보",
+            f"V7594:관찰편입=전일패턴A이월·박스상단{float(info.get('box_top', 0)):,.0f}"
+            f"·조정저점{float(info.get('pull_low', 0)):,.0f}",
+            now,
+        )
+
+    def _v7612_register_carry_candidate(self, symbol: str, info: dict[str, Any]) -> None:
+        name = str(info.get("name") or self.names.get(symbol, symbol))
+        self.names[symbol] = name
+        quote = self.latest_quotes.get(symbol)
+        try:
+            self.candidate_meta[symbol] = _V753.Candidate(
+                symbol=symbol, name=name,
+                price=float(getattr(quote, "price", 0.0) or 0.0),
+                change_pct=float(getattr(quote, "change_pct", 0.0) or 0.0),
+                volume=int(getattr(quote, "cumulative_volume", 0) or 0),
+                surge_rate=0.0, score=998.0, source="전일패턴A이월",
+            )
+        except Exception:
+            pass
+        if symbol not in self.active_symbols and symbol not in self.broker.positions:
+            self.active_symbols.append(symbol)
+        self._queue_bootstrap([symbol])
+
+    def _current_symbols(self) -> list[str]:
+        """기존 스캔 대상 + (08:50~11:00) 전날 패턴A 이월 후보. 저장 파일은 건드리지 않는다."""
+        base = list(super()._current_symbols())
+        if not _PATTERN12.CARRY_ENABLED:
+            return base
+        now = datetime.now(KST)
+        if not ((8, 50) <= (now.hour, now.minute) and now.time() <= _PATTERN12.A_TRIGGER_UNTIL):
+            return base
+        try:
+            carry = self._v7612_carry_symbols(now)
+        except Exception:
+            return base
+        extra: list[str] = []
+        for symbol, info in carry.items():
+            if symbol in self.broker.positions:
+                continue
+            if symbol not in self.active_symbols:
+                self._v7612_register_carry_candidate(symbol, info)
+            extra.append(symbol)
+        return list(dict.fromkeys(extra + base))
 
     def _service_symbol(self, symbol: str, *, hot: bool) -> None:
         # The parent run loop already monitors one holding before candidate I/O.
@@ -3097,7 +5036,7 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
                         stamp = self._v7609_timestamp(
                             raw.get("timestamp"), datetime.now(KST)
                         )
-                        if not order_id or len(symbol) != 6 or not symbol.isdigit():
+                        if not order_id or not _v7612_is_code(symbol):
                             continue
                         if order_id in seen:
                             raise ValueError(f"중복 PAPER 체결 ID 발견: {order_id}")
@@ -3544,7 +5483,16 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
 
         def sell_once(symbol: str, quote: Any, reason: str, *args: Any, **kwargs: Any) -> Any:
             if reason == "예약목표+1.5%":
-                reason = "예약목표 비용포함+2.0%"
+                split = self._v7613_info(str(symbol).zfill(6))
+                override = self._v7620_position_override(str(symbol).zfill(6))
+                if override and float(override.get("target_pct", 0) or 0) > 0:
+                    reason = f"예약목표 형지시 평단+{float(override['target_pct']):.1%}"
+                elif split is not None and int(split.get("tranche", 1)) >= 2:
+                    # V7618b: 부모 PAPER 매도는 '예약목표'로 시작하는 사유만 목표가 체결을 허용한다.
+                    # (11/10: 'V7613 …'로 바꿔 2·3차 뒤 목표매도 6종목이 전부 거절 → 15:19 정리로만 청산)
+                    reason = f"예약목표 V7613 {int(split['tranche'])}차후 평단+{_SPLIT13.ADD_TARGET:.1%}"
+                else:
+                    reason = "예약목표 비용포함+2.0%"
             holder = self._v7609_order_thread_obj()
             if isinstance(getattr(holder, "current", None), dict):
                 return original_sell(symbol, quote, reason, *args, **kwargs)
@@ -3698,7 +5646,7 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
         )
 
     def _v7609_enforce_fixed_stop(self, symbol: str) -> bool:
-        """Use the valid tick nearest the cost-inclusive 1.5% stop."""
+        """Normalize persisted stops, including zero for the no-stop PAPER experiment."""
 
         position = getattr(self.broker, "positions", {}).get(str(symbol))
         if position is None:
@@ -3711,15 +5659,21 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
         if abs(current_stop - fixed_stop) < 0.01:
             return False
         position.stop_price = fixed_stop
+        if not V7632_PAPER_AUTO_STOP:
+            self.logger.warning("PAPER 자동손절 해제 %s | prior=%.0f", self._label(str(symbol)), current_stop)
+            return True
         self.logger.warning(
-            "V7609 PAPER net 1.5%% stop %s | entry=%.0f prior=%.0f fixed=%.0f",
+            ("V7613 분할매수 손절가 %s | entry=%.0f prior=%.0f fixed=%.0f"
+             if self._v7613_info(str(symbol)) is not None else
+             "V7609 PAPER net 1.5%% stop %s | entry=%.0f prior=%.0f fixed=%.0f"),
             self._label(str(symbol)), entry_price, current_stop, fixed_stop,
         )
         return True
 
     @staticmethod
     def _v7609_exit_prices(entry_price: float) -> tuple[float, float]:
-        return _EXIT_POLICY.exit_prices(entry_price, _V753.align_stock_price, _V753.stock_tick_size)
+        stop, target = _EXIT_POLICY.exit_prices(entry_price, _V753.align_stock_price, _V753.stock_tick_size)
+        return (stop if V7632_PAPER_AUTO_STOP else 0.0), target
 
     def _v7609_cost_rates(self) -> tuple[float, float]:
         settings = getattr(self.broker, "settings", getattr(self, "settings", None))
@@ -3728,13 +5682,31 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
 
     def _v7609_position_exit_prices(self, position: Any) -> tuple[float, float]:
         commission, tax = self._v7609_cost_rates()
-        return _EXIT_POLICY.exit_prices(position.entry_price, _V753.align_stock_price,
+        split = self._v7613_info(str(getattr(position, "symbol", "")))
+        if split is not None:
+            return self._v7613_exit_prices(position, split, commission, tax)
+        stop, target = _EXIT_POLICY.exit_prices(position.entry_price, _V753.align_stock_price,
             _V753.stock_tick_size, entry_cost=_EXIT_POLICY.cost_per_share(position, commission),
             commission=commission, tax=tax)
+        override = self._v7620_position_override(str(getattr(position, "symbol", "")))
+        if override and float(override.get("target_pct", 0) or 0) > 0:
+            target = _CMD20.target_price(_EXIT_POLICY.cost_per_share(position, commission),
+                                         float(override["target_pct"]), commission, tax,
+                                         _V753.align_stock_price, _V753.stock_tick_size)
+        return (stop if V7632_PAPER_AUTO_STOP else 0.0), target
 
     def _v7609_support_stop_reason(self, symbol: str, price: float, now: datetime) -> str:
+        if not V7632_PAPER_AUTO_STOP:
+            return ""
         position = self.broker.positions.get(symbol)
         if position is None or not math.isfinite(price) or price <= 0:
+            return ""
+        split = self._v7613_info(symbol)
+        if split is not None:
+            # V7613: 분할매수 종목은 최초 매수가 -10% 하나만 손절 기준이다(-3% 최대손절·지지이탈 미적용).
+            stop, _target = self._v7609_position_exit_prices(position)
+            if float(price) <= float(stop):
+                return f"V7613 분할매수 손절-10%(최초매수가 {float(split['first_price']):,.0f})"
             return ""
         states = getattr(self, "_v7609_exit_support", {})
         self._v7609_exit_support = states
@@ -3766,15 +5738,26 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
             commission, tax = self._v7609_cost_rates()
             loss_pct = -_EXIT_POLICY.net_return(position, position.stop_price, commission, tax)*100
             gain_pct = _EXIT_POLICY.net_return(position, target, commission, tax)*100
-            if not (abs(loss_pct-1.5) <= .1 and gain_pct >= 2-1e-9):
+            split = self._v7613_info(str(symbol))
+            if not V7632_PAPER_AUTO_STOP:
+                self.logger.warning("PAPER 청산가 %s | 목표=%.0f(%+.2f%%) 자동손절=없음",
+                                    self._label(str(symbol)), float(target), gain_pct)
+            elif split is not None:
+                self.logger.warning(
+                    "V7613 %d차 청산가 %s | 평단=%.0f 목표=%.0f(%+.2f%%) 손절=%.0f(최초 %.0f -10%%)",
+                    int(split["tranche"]), self._label(str(symbol)), entry, float(target), gain_pct,
+                    float(position.stop_price), float(split["first_price"]),
+                )
+            elif not (abs(loss_pct-1.5) <= .1 and gain_pct >= 2-1e-9):
                 self.logger.warning(
                     "V7609 PAPER exit tick band unavailable %s | stop_loss_pct=%.4f target_gain_pct=%.4f",
                     self._label(str(symbol)), loss_pct, gain_pct,
                 )
-        if announce and position is not None and symbol not in self._gem_order_announced:
+        if (announce and position is not None and symbol not in self._gem_order_announced
+                and self._v7613_info(str(symbol)) is None):
             self._gem_order_announced.add(str(symbol))
             self.logger.warning(
-                "PAPER order registered %s | held=%s | entry=%.0f | net target=%.0f(+2.0%%) | net stop=%.0f(-1.5%%, immediate; -3%% gap guard)",
+                "PAPER order registered %s | held=%s | entry=%.0f | net target=%.0f(+2.0%%) | stop=%.0f (0=disabled)",
                 self._label(str(symbol)), int(position.quantity),
                 float(position.entry_price), float(position.target_price),
                 float(position.stop_price),
@@ -3807,6 +5790,10 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
         # Serialize target and stop. Check the fixed stop before slower parent reporting.
         with self._v7609_stage_lock:
             position = self.broker.positions.get(str(quote.symbol))
+            if position is not None and self._v7628_open_sell(str(quote.symbol), quote, detection_time):
+                return
+            if position is not None and self._v7613_eod_close(str(quote.symbol), quote, detection_time):
+                return
             if position is not None:
                 self._enforce_gem_orders(str(quote.symbol), announce=False)
                 if 0 < float(quote.price) <= float(position.stop_price):
@@ -3826,6 +5813,10 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
     ) -> bool:
         """Execute the PAPER fixed stop with truthful -1.5% audit metadata."""
 
+        # This shared executor also serves two non-stop exits. Preserve those,
+        # but deny delayed/legacy stop requests before any state/order mutation.
+        if not V7632_PAPER_AUTO_STOP and source not in {"V7628_OPEN_PROFIT", "V7613_EOD_1519"}:
+            return False
         if symbol in self._gem_exit_inflight:
             return False
         position = self.broker.positions.get(symbol)
@@ -3879,6 +5870,7 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
         """Keep target exits visible and reject only their same-minute auto signal."""
 
         super()._print_sell(fill)
+        self._v7613_on_sell(fill)
         reason = str(getattr(fill, "reason", "") or "")
         if "목표" not in reason or float(getattr(fill, "pnl", 0.0) or 0.0) < 0:
             return
@@ -4722,6 +6714,15 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
 
         candidate_stages = {"매수후보", "매수직전", "매수가능성"}
         reason_text = str(reason)
+        if (stage in candidate_stages | {"관심종목", "관찰후보"}
+                and str(symbol) not in getattr(self, "manual_watch", {})
+                and str(symbol) not in getattr(getattr(self, "broker", None), "positions", {})
+                and not any(token in reason_text for token in ("사용자", "형 의견", "수동", "직접관심"))):
+            thin = self._v7625_thin_reason(str(symbol), now)
+            if thin:
+                # V7625: 거래가 너무 적은 종목은 새 단계로 올리지 않는다(형이 직접 넣은 종목·보유 종목은 제외).
+                self._show_throttled_error(f"v7625-stage:{symbol}", f"V7625 단계편입 보류 {self._label(symbol)} | {thin}", 600.0)
+                return
         if stage == "관찰후보" and reason_text.startswith("V7594:관찰편입="):
             self._v76_strict_observation[str(symbol)] = now
         strict_interest = self._v7609_is_strict_interest_reason(reason_text)
@@ -5195,7 +7196,7 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
                     if not (V7609_POSTCLOSE_EVENT_FROM <= stamp <= V7609_POSTCLOSE_EVENT_UNTIL):
                         continue
                     symbol = str(item.get("symbol", "")).strip().zfill(6)
-                    if not symbol.isdigit():
+                    if not _v7612_is_code(symbol):
                         continue
                     try:
                         current_price = float(item.get("current_price", 0.0) or 0.0)
@@ -5266,7 +7267,7 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
         base_by_symbol: dict[str, dict[str, Any]] = {}
         for raw_row in snapshot.get("rows", []):
             symbol = str(raw_row.get("symbol", "")).strip().zfill(6)
-            if symbol.isdigit():
+            if _v7612_is_code(symbol):
                 base_by_symbol[symbol] = dict(raw_row)
         price_by_symbol = self._v7609_postclose_prices()
         stage_map = {
@@ -5544,8 +7545,22 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
                 row["change_pct"] = (current / average_price - 1.0) * 100 if current > 0 and average_price > 0 else ""
                 commission, tax = self._v7609_cost_rates()
                 net_rate = _EXIT_POLICY.net_return(position, current, commission, tax) if current > 0 else None
-                row.update(buy_date=buy_stamp.strftime("%Y-%m-%d") if buy_stamp else "기록없음",
-                    buy_time=buy_stamp.strftime("%H:%M:%S") if buy_stamp else "-",
+                # V7633 (형 지시): 보유표에 1·2·3차 수량·금액과 총 매수금액을 보이고, 매수시각은 '첫 매수' 기준으로.
+                # (예전에는 마지막 추가매수 시각이 떠서 3차 13:49가 첫 매수처럼 보였다 — 아이티엠반도체 11/25)
+                split_info = (getattr(self, "_v7613_split", {}) or {}).get(symbol) or {}
+                tranche_fills = [
+                    dict(tranche=int(f.get("tranche", i + 1) or i + 1), time=str(f.get("time", "") or ""),
+                         price=float(f.get("price", 0) or 0), quantity=int(f.get("quantity", 0) or 0),
+                         notional=float(f.get("notional", 0) or 0))
+                    for i, f in enumerate(split_info.get("fills", []) or []) if isinstance(f, dict)
+                ]
+                row["tranche_fills"] = tranche_fills
+                row["invested"] = (sum(f["notional"] or f["price"] * f["quantity"] for f in tranche_fills)
+                                   if tranche_fills else average_price * row["quantity"])
+                first_stamp = self._v7609_timestamp(split_info.get("first_time"), now) if split_info.get("first_time") else None
+                shown_stamp = first_stamp or buy_stamp
+                row.update(buy_date=shown_stamp.strftime("%Y-%m-%d") if shown_stamp else "기록없음",
+                    buy_time=shown_stamp.strftime("%H:%M:%S") if shown_stamp else "-",
                     buy_price=average_price, net_pnl_pct=net_rate * 100 if net_rate is not None else None,
                     net_pnl=net_rate * _EXIT_POLICY.cost_per_share(position, commission) * row["quantity"] if net_rate is not None else None)
                 if buy_stamp is not None:
@@ -5665,6 +7680,10 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
                 stage='관찰후보', stage_time=candidate['data_time'].strftime('%H:%M:%S'),
                 current_price=candidate['current_price'], change_pct=candidate['rise']*100,
                 reason=candidate['reason'], provisional=True))
+        try:
+            self._v7613_decorate_rows(final_rows, now)
+        except Exception as exc:
+            self.logger.warning("V7613 분할매수 화면표시 보류 | %s", type(exc).__name__)
         snapshot["rows"] = final_rows
         return snapshot
 
@@ -5685,6 +7704,7 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
             daemon=True,
         )
         watcher.start()
+        _V7614_ENGINE["engine"] = self   # 차트 패널이 조회 클라이언트·보유 평단을 읽기 전용으로 사용
         try:
             if _V7609_USER_CLOSE.is_set():
                 self.command_stop_requested = True
@@ -5757,6 +7777,19 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
                 self.pending_entries.pop(symbol, None)
                 self._v7610_log_entry_block(symbol, blocked, reason)
                 return False
+            if self._v7619_blocked(symbol, "신규1차"):
+                self.pending_entries.pop(symbol, None)
+                return False
+            thin = self._v7625_thin_reason(symbol)
+            if thin:
+                self.pending_entries.pop(symbol, None)
+                self._show_throttled_error(f"v7625:{symbol}", f"V7625 자동매수 제외 {self._label(symbol)} | {thin}", 300.0)
+                return False
+            hot = self._v7621_hot_reason(symbol)
+            if hot:
+                self.pending_entries.pop(symbol, None)
+                self._show_throttled_error(f"v7621:{symbol}", f"V7621 자동매수 제외 {self._label(symbol)} | {hot}", 300.0)
+                return False
         target_exit_at = self._v7609_target_exit_at.get(symbol)
         signal_time = getattr(signal, "timestamp", None)
         if not manual and _v7609_same_signal_minute(signal_time, target_exit_at):
@@ -5774,7 +7807,7 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
                 or not self._v7609_early_order_allowed(symbol, signal.reference_price, datetime.now(KST))):
             self.pending_entries.pop(symbol, None)
             return False
-        if pattern not in {PATTERN, BREAKOUT_PATTERN, EARLY_PATTERN} and not manual:
+        if pattern not in {PATTERN, BREAKOUT_PATTERN, EARLY_PATTERN, TAIL_PATTERN, CARRY_PATTERN} and not manual:
             self.logger.warning(
                 "V76 옛 자동매수 원천차단 %s | pattern=%s reason=%s",
                 self._label(str(getattr(signal, "symbol", ""))),
@@ -5790,10 +7823,16 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
                     self._label(symbol), reason,
                 )
                 return False
+        split_entry = bool(_SPLIT13.ENABLED and not manual and pattern in V7613_SPLIT_PATTERNS)
+        if split_entry and not self._v7613_cash_allows_new(symbol):
+            self.pending_entries.pop(symbol, None)
+            return False
         if pattern in {PATTERN, EARLY_PATTERN}:
             entered = bool(_V7588._attempt_entry(self, signal, from_retry=from_retry))
         else:
             entered = bool(super()._attempt_entry(signal, from_retry=from_retry))
+        if entered and split_entry:
+            self._v7613_register_first(symbol, signal)
         if entered and self._v7609_enforce_fixed_stop(symbol):
             self.broker.save_state()
         if entered:
@@ -5870,6 +7909,580 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
                 duplicate_result=False,
             )
         )
+
+
+    # ------------------------------------------------------------ V7613 분할매수(1:3:9)
+    def _v7613_states(self) -> dict[str, dict[str, Any]]:
+        states = getattr(self, "_v7613_split", None)
+        if states is not None:
+            return states
+        states, closed = {}, []
+        try:
+            payload = json.loads(V7613_STATE_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        positions = getattr(getattr(self, "broker", None), "positions", {}) or {}
+        for symbol, item in dict(payload.get("positions", {}) or {}).items():
+            position = positions.get(str(symbol))
+            try:
+                if (position is None or int(item.get("quantity", -1)) != int(position.quantity)
+                        or not 1 <= int(item.get("tranche", 0)) <= _SPLIT13.MAX_TRANCHE
+                        or float(item.get("first_price", 0)) <= 0):
+                    continue
+            except (TypeError, ValueError, AttributeError):
+                continue
+            states[str(symbol)] = dict(item)
+        today = datetime.now(KST).date().isoformat()
+        if str(payload.get("date", "")) == today:
+            closed = [dict(x) for x in payload.get("closed", []) if isinstance(x, dict)]
+        self._v7613_split = states
+        self._v7613_closed = closed
+        self._v7613_closed_date = today
+        return states
+
+    def _v7613_save(self) -> None:
+        states = self._v7613_states()
+        today = datetime.now(KST).date().isoformat()
+        if getattr(self, "_v7613_closed_date", today) != today:
+            self._v7613_closed, self._v7613_closed_date = [], today
+        payload = {
+            "version": "V7613",
+            "date": today,
+            "plan": {"weights": list(_SPLIT13.WEIGHTS), "notionals": list(_SPLIT13.NOTIONALS),
+                     "first_target": _SPLIT13.FIRST_TARGET, "add_target": _SPLIT13.ADD_TARGET,
+                     "hard_stop": _SPLIT13.HARD_STOP},
+            "positions": states,
+            "closed": list(getattr(self, "_v7613_closed", [])),
+        }
+        try:
+            V7613_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            temporary = V7613_STATE_FILE.with_suffix(".tmp")
+            temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n",
+                                 encoding="utf-8")
+            temporary.replace(V7613_STATE_FILE)
+        except OSError as exc:
+            self.logger.warning("V7613 분할매수 상태 저장 실패: %s", exc)
+
+    def _v7613_info(self, symbol: str) -> dict[str, Any] | None:
+        if not _SPLIT13.ENABLED:
+            return None
+        positions = getattr(getattr(self, "broker", None), "positions", None)
+        if not positions:
+            return None
+        symbol = str(symbol).strip().zfill(6)
+        if symbol not in positions:
+            return None
+        return self._v7613_states().get(symbol)
+
+    def _v7613_reserved(self) -> float:
+        positions = getattr(getattr(self, "broker", None), "positions", {}) or {}
+        return float(sum(_SPLIT13.remaining_after(int(item.get("tranche", 1)))
+                         for symbol, item in self._v7613_states().items() if symbol in positions))
+
+    def _v7613_committed(self) -> float:
+        """운용한도 계산(V7624): 보유 종목의 실제 매입금액 합계."""
+        positions = getattr(getattr(self, "broker", None), "positions", {}) or {}
+        spent = 0.0
+        today = datetime.now(KST).date().isoformat() if V7630_CARRY_OUTSIDE_BUDGET else ""
+        for symbol, position in positions.items():
+            try:
+                if today:
+                    # V7630b: 오늘 체결한 금액만 센다(전일 이전 매입분은 이월 → 한도 밖).
+                    info = self._v7613_info(str(symbol)) or {}
+                    fills = [f for f in info.get("fills", []) if isinstance(f, dict)]
+                    if fills:
+                        spent += sum(float(f.get("notional", 0) or 0) for f in fills if str(f.get("time", ""))[:10] == today)
+                        continue
+                    entered = getattr(position, "entry_time", None)
+                    if entered is not None and entered.astimezone(KST).date().isoformat() != today:
+                        continue
+                spent += float(position.entry_price) * int(position.quantity)
+            except (AttributeError, TypeError, ValueError):
+                continue
+        return spent
+
+    def _v7613_cash_allows_new(self, symbol: str) -> bool:
+        broker = getattr(self, "broker", None)
+        if broker is None or not isinstance(getattr(broker, "cash", None), (int, float)):
+            return True   # 예수금 정보가 없는 경로(시험용 대역)는 기존 진입 판정에 맡긴다
+        settings = getattr(broker, "settings", getattr(self, "settings", None))
+        factor = 1.0 + float(getattr(settings, "commission_pct", 0) or 0) + float(getattr(settings, "slippage_pct", 0) or 0)
+        need = _SPLIT13.FIRST_NOTIONAL * factor
+        cash = float(broker.cash)
+        committed = self._v7613_committed()
+        wanted = _SPLIT13.FIRST_NOTIONAL + _SPLIT13.NEW_ENTRY_BUFFER
+        if committed + wanted > _SPLIT13.BUDGET_LIMIT + 1.0:
+            self._show_throttled_error(
+                "v7613-budget",
+                f"V7613 운용한도 신규 1차 보류 {self._label(symbol)} | 실제 매입 {committed:,.0f} + 1차 "
+                f"{_SPLIT13.FIRST_NOTIONAL:,.0f} + 여유 {_SPLIT13.NEW_ENTRY_BUFFER:,.0f} > 한도 {_SPLIT13.BUDGET_LIMIT:,.0f}",
+                60.0,
+            )
+            return False
+        if cash >= need:
+            return True
+        self._show_throttled_error(
+            "v7613-cash",
+            f"V7613 예수금 부족 신규 1차 보류 {self._label(symbol)} | 예수금 {cash:,.0f} < 필요 {need:,.0f}",
+            60.0,
+        )
+        return False
+
+    def _v7613_register_first(self, symbol: str, signal: Any) -> None:
+        position = getattr(getattr(self, "broker", None), "positions", {}).get(str(symbol))
+        if position is None:
+            return
+        states = self._v7613_states()
+        when = getattr(position, "entry_time", None) or datetime.now(KST)
+        stamp_text = self._v7609_stamp_text(when)
+        price = float(position.entry_price)
+        states[str(symbol)] = {
+            "symbol": str(symbol),
+            "name": self._v7609_resolve_display_name(str(symbol)),
+            "pattern": str(getattr(position, "pattern", "") or getattr(signal, "pattern", "")),
+            "tranche": 1,
+            "first_price": price,
+            "first_time": stamp_text,
+            "last_fill_price": price,
+            "last_fill_time": stamp_text,
+            "replay_after": stamp_text,
+            "quantity": int(position.quantity),
+            "ordered_bar": "",
+            "watch": _SPLIT13.STATE_TEXT[0],
+            "fills": [{"tranche": 1, "time": stamp_text, "price": price, "quantity": int(position.quantity),
+                       "notional": price * int(position.quantity),
+                       "reason": str(getattr(signal, "reason", ""))[:160]}],
+        }
+        self._v7613_save()
+        self._enforce_gem_orders(str(symbol), announce=False)
+        self.broker.save_state()
+        self.logger.warning(
+            "V7613 1차매수 등록 %s | %d주 %.0f원(%.0f원) | 목표=%.0f 손절=%.0f | 다음 2차 %.0f원은 패턴 재출현 때",
+            self._label(str(symbol)), int(position.quantity), price, price * int(position.quantity),
+            float(position.target_price), float(position.stop_price), _SPLIT13.notional_for(2),
+        )
+
+    def _v7613_exit_prices(self, position: Any, split: dict[str, Any],
+                           commission: float, tax: float) -> tuple[float, float]:
+        cost = _EXIT_POLICY.cost_per_share(position, commission)
+        target = _SPLIT13.target_price(cost, int(split.get("tranche", 1)), commission, tax,
+                                       _V753.align_stock_price, _V753.stock_tick_size)
+        override = self._v7620_position_override(str(getattr(position, "symbol", "") or split.get("symbol", "")))
+        if override and float(override.get("target_pct", 0) or 0) > 0:
+            # V7620 형 지시: 로직 목표 대신 평단(비용포함) +N%
+            target = _CMD20.target_price(cost, float(override["target_pct"]), commission, tax,
+                                         _V753.align_stock_price, _V753.stock_tick_size)
+        stop = _SPLIT13.stop_price(float(split["first_price"]), _V753.align_stock_price)
+        return (stop if V7632_PAPER_AUTO_STOP else 0.0), target
+
+    @staticmethod
+    def _v7613_regular_bars(raw: list[Any]) -> list[Any]:
+        rows = []
+        for bar in raw:
+            stamp = getattr(bar, "timestamp", None)
+            if not isinstance(stamp, datetime):
+                continue
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=KST)
+            clock = stamp.astimezone(KST)
+            if (9, 0) <= (clock.hour, clock.minute) < (15, 30):
+                rows.append(bar)
+        rows.sort(key=lambda item: getattr(item, "timestamp"))
+        return rows[-600:]
+
+    def _v7613_try_add(self, symbol: str, raw: list[Any], now: datetime) -> bool:
+        split = self._v7613_info(symbol)
+        if split is None:
+            return False
+        if split.get("close_bet"):
+            return False   # V7628 종가배팅: 추가매수 없음
+        tranche = int(split.get("tranche", 1))
+        if tranche >= _SPLIT13.MAX_TRANCHE:
+            split["watch"] = "3차까지 완료 · 평단+0.5% 매도 대기"
+            return False
+        if not _SPLIT13.add_window(now) or bool(getattr(self.risk, "data_halted", False)):
+            return False
+        bars = self._v7613_regular_bars(raw)
+        if not bars:
+            return False
+        latest = getattr(bars[-1], "timestamp")
+        latest = (latest if latest.tzinfo else latest.replace(tzinfo=KST)).astimezone(KST)
+        expected = now.astimezone(KST).replace(second=0, microsecond=0) - timedelta(minutes=1)
+        if latest.replace(second=0, microsecond=0) != expected:
+            return False
+        try:
+            # 1차: 매수 시각 뒤에 시작한 봉부터 / 2·3차: 직전 신호봉 다음 봉부터 (재현 시험과 동일)
+            last_fill = datetime.fromisoformat(str(split.get("replay_after") or split["last_fill_time"]))
+            if last_fill.tzinfo is None:
+                last_fill = last_fill.replace(tzinfo=KST)
+        except (KeyError, ValueError, TypeError):
+            return False
+        result = _SPLIT13.replay(bars, last_fill, float(split["last_fill_price"]))
+        split["watch"] = f"{tranche + 1}차 조건: {result['state_text']}"
+        if not result["fresh_trigger"] or split.get("ordered_bar") == result["trigger_time"]:
+            return False
+        split["ordered_bar"] = result["trigger_time"]
+        self._v7613_save()
+        amount = _SPLIT13.notional_for(tranche + 1)
+        committed = self._v7613_committed()
+        if committed + amount > _SPLIT13.BUDGET_LIMIT + 1.0:
+            # V7624: 한도가 모자라면 이 신호는 건너뛰고 그대로 보유(다음 재출현 때 다시 판단)
+            split["watch"] = f"{tranche + 1}차 신호 건너뜀(운용한도) · 다음 재출현 대기"
+            self.logger.warning("V7613 운용한도 %d차매수 건너뜀 %s | 실제 매입 %s + %s > 한도 %s",
+                                tranche + 1, self._label(symbol), f"{committed:,.0f}", f"{amount:,.0f}",
+                                f"{_SPLIT13.BUDGET_LIMIT:,.0f}")
+            return False
+        return self._v7613_execute_add(symbol, split, tranche + 1, result)
+
+    def _v7613_paper_add(self, symbol: str, quantity: int, quote: Any, reason: str) -> Any:
+        """Same accounting as V75.16 paper_add_to_position, with the V7613 plan cap (PLAN_TOTAL)."""
+        broker = self.broker
+        position = broker.positions.get(symbol)
+        if position is None:
+            raise ValueError("V7613 추가매수 대상 미보유")
+        if quote.best_ask is None or quote.best_ask <= 0:
+            raise ValueError("V7613 추가매수 매도1호가없음")
+        v753 = _V7516.v753
+        price = v753.align_stock_price(quote.best_ask * (1.0 + broker.settings.slippage_pct), upward=True)
+        current_notional = float(position.entry_price) * int(position.quantity)
+        remaining = max(0.0, _SPLIT13.PLAN_TOTAL * 1.02 - current_notional)
+        cap_quantity = math.floor(remaining / max(price, 1.0))
+        cash_quantity = math.floor(broker.cash / (price * (1.0 + broker.settings.commission_pct)))
+        quantity = max(0, min(int(quantity), cap_quantity, cash_quantity))
+        if quantity < 1:
+            raise ValueError("V7613 계획한도 또는 예수금 부족")
+        gross = price * quantity
+        fee = gross * broker.settings.commission_pct
+        old_quantity = int(position.quantity)
+        new_quantity = old_quantity + quantity
+        weighted_price = (float(position.entry_price) * old_quantity + price * quantity) / max(1, new_quantity)
+        broker.sequence += 1
+        broker.cash -= gross + fee
+        now = datetime.now(KST)
+        position.quantity = new_quantity
+        position.entry_price = weighted_price
+        position.entry_fee = float(position.entry_fee) + fee
+        position.entry_time = now
+        position.highest_price = max(float(position.highest_price), price)
+        position.target_order_active = True
+        fill = v753.Fill(
+            f"PAPER-{broker.sequence:06d}", now, symbol, "BUY", quantity,
+            price, fee, 0.0, -fee, reason, pattern=position.pattern,
+        )
+        broker._record_fill(fill)
+        broker.save_state()
+        return fill
+
+    def _v7613_execute_add(self, symbol: str, split: dict[str, Any], tranche: int, result: dict[str, Any]) -> bool:
+        position = self.broker.positions.get(symbol)
+        if position is None:
+            return False
+        try:
+            fresh = self.client.get_quote(symbol)
+            quote = self.client.get_orderbook(symbol, fresh, side="buy")
+            self.latest_quotes[symbol] = quote
+        except Exception as exc:
+            self.logger.info("V7613 %d차매수 시세보류 %s %s", tranche, self._label(symbol), exc)
+            return False
+        if quote.best_ask is None or float(quote.best_ask) <= 0:
+            self.logger.info("V7613 %d차매수 호가없음 %s", tranche, self._label(symbol))
+            return False
+        expected = _V753.align_stock_price(float(quote.best_ask) * (1.0 + self.settings.slippage_pct), upward=True)
+        quantity = math.floor(_SPLIT13.notional_for(tranche) / max(1.0, expected))
+        if quantity < 1:
+            return False
+        reason = (f"V7613_{tranche}차분할|{result['reason']}|신호봉 {str(result['trigger_time'])[11:16]}"
+                  f"|직전매수가 {float(split['last_fill_price']):,.0f} 아래")
+        signal = _V753.Signal(
+            symbol, _V753.SignalAction.BUY, 140.0 + tranche, reason,
+            float(quote.price), datetime.now(KST), str(position.pattern),
+            V7609_FIXED_STOP_LOSS_PCT, V7609_TAKE_PROFIT_PCT,
+        )
+        identity = self._v7609_make_order_identity(
+            side="BUY", symbol=symbol, source="AUTO_SCALE_IN",
+            source_id=f"V7613|{tranche}|{result['trigger_time']}",
+        )
+        try:
+            with self._v7609_stage_lock:
+                fill = self._v7609_run_order_intent(
+                    identity,
+                    {"symbol": symbol, "tranche": int(tranche), "quantity": int(quantity),
+                     "data_time": str(result["trigger_time"])},
+                    lambda: self._v7613_paper_add(symbol, quantity, quote, reason),
+                    duplicate_result=None,
+                )
+                if fill is None:
+                    return False
+                position = self.broker.positions[symbol]
+                fill_time = self._v7609_stamp_text(getattr(fill, "timestamp", None) or datetime.now(KST))
+                split["tranche"] = int(tranche)
+                split["last_fill_price"] = float(fill.price)
+                split["last_fill_time"] = fill_time
+                split["replay_after"] = str(result["trigger_time"])
+                split["quantity"] = int(position.quantity)
+                split["fills"] = list(split.get("fills", [])) + [{
+                    "tranche": int(tranche), "time": fill_time, "price": float(fill.price),
+                    "quantity": int(fill.quantity), "notional": float(fill.price) * int(fill.quantity),
+                    "reason": reason[:160]}]
+                split["watch"] = ("3차까지 완료 · 평단+0.5% 매도 대기" if tranche >= _SPLIT13.MAX_TRANCHE
+                                  else f"{tranche + 1}차 조건: {_SPLIT13.STATE_TEXT[0]}")
+                self._v7613_save()
+                self._enforce_gem_orders(symbol, announce=False)
+                self.broker.save_state()
+        except ValueError as exc:
+            self.logger.info("V7613 %d차매수 보류 %s %s", tranche, self._label(symbol), exc)
+            return False
+        self._print_buy(fill, position, signal)
+        self.logger.warning(
+            "V7613 %d차 매수완료 %s | %d주 %.0f원 | 누적 %d주 평단=%.0f | 목표=%.0f(평단+%.1f%%) 손절=%.0f",
+            tranche, self._label(symbol), int(fill.quantity), float(fill.price), int(position.quantity),
+            float(position.entry_price), float(position.target_price), _SPLIT13.ADD_TARGET * 100,
+            float(position.stop_price),
+        )
+        return True
+
+    def _v7613_eod_close(self, symbol: str, quote: Any, detection_time: datetime | None) -> bool:
+        if self._v7613_info(symbol) is None:
+            return False
+        if not V7630_EOD_CLOSE and not (self._v7613_info(symbol) or {}).get("close_bet"):
+            return False   # V7630 형 지시: 모의투자는 장마감 정리 없이 다음날로 넘긴다(종가배팅의 다음날 정리만 유지)
+        now = (detection_time or datetime.now(KST)).astimezone(KST)
+        if not _SPLIT13.eod_due(now) or symbol in self._gem_exit_inflight:
+            return False
+        override = self._v7620_position_override(symbol)
+        if override and override.get("skip_eod"):
+            key = (symbol, now.date().isoformat())
+            if key not in getattr(self, "_v7620_eod_logged", set()):
+                self._v7620_eod_logged = set(getattr(self, "_v7620_eod_logged", set())) | {key}
+                self.logger.warning("V7620 형 지시로 15:19 정리 생략·이월 %s | 목표 +%.1f%% · 자동손절 없음",
+                                    self._label(symbol), float(override.get("target_pct", 0)) * 100)
+            return False
+        split = self._v7613_info(symbol) or {}
+        if split.get("close_bet") and _CBET28.bought_today(str(split.get("buy_day", "")), now.date()):
+            return False   # V7628 종가배팅: 산 날은 정리하지 않고 다음날로 넘긴다
+        price = float(getattr(quote, "price", 0) or 0)
+        if not math.isfinite(price) or price <= 0:
+            return False
+        return self._v7609_execute_fixed_stop_locked(
+            symbol, quote, detected_at=now, source="V7613_EOD_1519",
+            trigger_price=price,
+            reason="종가배팅 다음날 장마감정리 15:19" if split.get("close_bet") else "V7613 장마감정리 15:19",
+        )
+
+    def _v7613_on_sell(self, fill: Any) -> None:
+        symbol = str(getattr(fill, "symbol", "")).strip().zfill(6)
+        if symbol not in getattr(self.broker, "positions", {}) and self._v7620_position_override(symbol):
+            data = self._v7620_data()
+            data["positions"].pop(symbol, None)
+            self._v7620_save(data)
+            self.logger.warning("V7620 형 지시 종료(매도 완료) %s", self._label(symbol))
+        states = self._v7613_states()
+        split = states.get(symbol)
+        if split is None or symbol in getattr(self.broker, "positions", {}):
+            return
+        states.pop(symbol, None)
+        invested = sum(float(x.get("notional", 0)) for x in split.get("fills", []))
+        pnl = float(getattr(fill, "pnl", 0.0) or 0.0)
+        stamp = getattr(fill, "timestamp", None) or datetime.now(KST)
+        closed = list(getattr(self, "_v7613_closed", []))
+        closed.append({
+            "symbol": symbol, "name": split.get("name", ""), "tranche": int(split.get("tranche", 1)),
+            "first_time": split.get("first_time", ""), "exit_time": self._v7609_stamp_text(stamp),
+            "exit_price": float(getattr(fill, "price", 0.0) or 0.0), "invested": invested,
+            "pnl": pnl, "pnl_pct": (pnl / invested * 100.0) if invested > 0 else 0.0,
+            "reason": str(getattr(fill, "reason", "") or ""), "fills": split.get("fills", []),
+        })
+        self._v7613_closed = closed
+        self._v7613_save()
+        self.logger.warning(
+            "V7613 분할매매 종료 %s | %d차까지 | 투입 %.0f원 | 손익 %+.0f원(%+.2f%%) | %s",
+            self._label(symbol), int(split.get("tranche", 1)), invested, pnl,
+            (pnl / invested * 100.0) if invested > 0 else 0.0, str(getattr(fill, "reason", "")),
+        )
+
+    def _v7615_relabel_wave_rows(self, rows: list[dict[str, Any]]) -> None:
+        """V7615 화면 전용: 'N차상승+3%'(WAVE, 매수신호 없음) 매수직전을 '1차상승 포착'으로 보여준다.
+
+        내부 단계·우선감시·매수 판정은 그대로 두고 표의 단계 칸과 이유 앞머리만 바꾼다.
+        """
+        manager = self._v7609_state_manager_obj()
+        latest: dict[str, Any] = {}
+        for event in reversed(manager.events):
+            if event.symbol not in latest and event.new_stage == _V7600_STATE.PREBUY:
+                latest[event.symbol] = event
+        for row in rows:
+            symbol = str(row.get("symbol", "")).strip().zfill(6)
+            if canonical_stage(row.get("stage", "")) != "매수가능성":
+                continue
+            if manager.stage_of(symbol) != _V7600_STATE.PREBUY:
+                continue
+            event = latest.get(symbol)
+            if event is None:
+                continue
+            evidence = event.evidence or {}
+            route = str(evidence.get("route", ""))
+            if route == "WAVE":
+                row["stage"] = "관찰후보"
+                row["reason"] = "[1차상승·조정대기] " + str(row.get("reason", ""))
+            elif evidence.get("buy") is False:
+                # V7626: 매수 신호가 아닌 '매수직전'(바닥은 나왔지만 반전·5분선 회복 전)은 관찰후보로 보여준다.
+                row["stage"] = "관찰후보"
+                row["reason"] = "[바닥형성·반전대기] " + str(row.get("reason", ""))
+            else:
+                # V7627: 매수 신호는 그 봉에서만 유효하다. 3분 넘게 지난 신호는 '지난 신호'로 내려 보여준다.
+                try:
+                    stamp = datetime.fromisoformat(str(getattr(event, "data_time", "") or evidence.get("data_time", "")))
+                    stamp = stamp if stamp.tzinfo else stamp.replace(tzinfo=KST)
+                    if (datetime.now(KST) - stamp).total_seconds() > 240:
+                        row["stage"] = "관찰후보"
+                        row["reason"] = f"[매수신호 지남 {stamp.astimezone(KST):%H:%M}·새 신호 대기] " + str(row.get("reason", ""))
+                except ValueError:
+                    pass
+
+    def _v7626_save_minute_bars_step(self, now: datetime) -> None:
+        """15:21 이후 화면 갱신 때마다 한 종목씩(조회 1번) 받아 두고, 다 받으면 하루치 파일로 저장한다."""
+        now = now.astimezone(KST)
+        if now.time() < V7626_SAVE_FROM or now.weekday() >= 5:
+            return
+        state = getattr(self, "_v7626_state", None)
+        if state is None or state["day"] != now.date():
+            path = V7626_BAR_DIR / f"{now:%Y%m%d}.json.gz"
+            if path.exists():
+                self._v7626_state = {"day": now.date(), "todo": [], "bars": {}, "done": True, "next": 0.0}
+                return
+            manager = self._v7609_state_manager_obj()
+            wanted = {_V7600_STATE.PREBUY, _V7600_STATE.HOLDING, _V7600_STATE.SOLD}
+            symbols = sorted({str(e.symbol).zfill(6) for e in manager.events if e.new_stage in wanted})
+            state = self._v7626_state = {"day": now.date(), "todo": symbols, "bars": {}, "done": False, "next": 0.0,
+                                         "total": len(symbols), "failed": 0}
+        if state["done"] or time.monotonic() < state["next"]:
+            return
+        state["next"] = time.monotonic() + 1.5
+        if state["todo"]:
+            symbol = state["todo"].pop(0)
+            try:
+                rows = []
+                for bar in self.client.get_experiment_bars(symbol):
+                    stamp = bar.timestamp if bar.timestamp.tzinfo else bar.timestamp.replace(tzinfo=KST)
+                    if stamp.astimezone(KST).date() == now.date():
+                        rows.append([stamp.astimezone(KST).strftime("%H:%M"), float(bar.open), float(bar.high),
+                                     float(bar.low), float(bar.close), int(bar.volume)])
+                rows.sort()
+                if rows:
+                    state["bars"][symbol] = rows
+            except Exception:
+                state["failed"] += 1
+            return
+        if not state["bars"]:
+            state["done"] = True   # 받을 종목이 없던 날(휴장 등)은 파일을 만들지 않는다
+            return
+        import gzip
+        V7626_BAR_DIR.mkdir(parents=True, exist_ok=True)
+        path = V7626_BAR_DIR / f"{now:%Y%m%d}.json.gz"
+        temp = path.with_suffix(".tmp")
+        names = {symbol: str(getattr(self, "names", {}).get(symbol, "")) for symbol in state["bars"]}
+        with gzip.open(temp, "wt", encoding="utf-8") as handle:
+            json.dump({"day": f"{now:%Y%m%d}", "saved_at": now.isoformat(), "columns": ["time", "o", "h", "l", "c", "v"],
+                       "names": names, "bars": state["bars"]}, handle, ensure_ascii=False)
+        temp.replace(path)
+        state["done"] = True
+        self.logger.warning("V7626 오늘 1분봉 저장 %d/%d종목(실패 %d) → %s", len(state["bars"]), state["total"],
+                            state["failed"], path.name)
+
+    def _v7613_decorate_rows(self, rows: list[dict[str, Any]], now: datetime) -> None:
+        try:
+            self._v7626_save_minute_bars_step(now)
+        except Exception as exc:
+            self.logger.warning("V7626 1분봉 저장 보류 | %s", type(exc).__name__)
+        try:
+            self._v7628_step(now)
+        except Exception as exc:
+            self._show_throttled_error("v7628-step", f"V7628 종가배팅 단계 보류 | {type(exc).__name__}: {exc}", 60.0)
+        try:
+            self._v7615_relabel_wave_rows(rows)
+        except Exception as exc:
+            self.logger.warning("V7615 1차상승 표시 보류 | %s", type(exc).__name__)
+        today = datetime.now(KST).date()
+        for (symbol, day), (_mono, gain) in list(getattr(self, "_v7621_cache", {}).items()):
+            if day != today or gain is None or gain < V7621_HOT_GAIN:
+                continue
+            for row in rows:   # 이미 조회된 종목만 표시(화면 경로에서는 새로 조회하지 않음)
+                if str(row.get("symbol", "")).zfill(6) == symbol and str(row.get("stage", "")) not in {"매수종목", "매도종목"}:
+                    tag = f"[최근{V7621_HOT_DAYS}일 {gain:+.0%} 급등 제외] "
+                    if not str(row.get("reason", "")).startswith(tag):
+                        row["reason"] = tag + str(row.get("reason", ""))
+        for row in rows:   # V7625: 이미 목록에 있던 종목이 거래부족이 되면 사유 앞에 표시(자동매수 안 함)
+            if str(row.get("stage", "")) in {"매수종목", "매도종목"}:
+                continue
+            code = str(row.get("symbol", "")).zfill(6)
+            if code in getattr(self, "manual_watch", {}):
+                continue
+            try:
+                thin = self._v7625_thin_reason(code, now)
+            except Exception:
+                thin = ""
+            if thin and not str(row.get("reason", "")).startswith("[거래부족"):
+                row["reason"] = f"[거래부족·자동매수 제외] {thin.split(' 거래부족')[0]} | " + str(row.get("reason", ""))
+        if not _SPLIT13.ENABLED:
+            return
+        states = self._v7613_states()
+        positions = getattr(self.broker, "positions", {})
+        for row in rows:
+            symbol = str(row.get("symbol", "")).strip().zfill(6)
+            split = states.get(symbol)
+            if split is None or symbol not in positions or str(row.get("stage", "")) != "매수종목":
+                continue
+            tranche = int(split.get("tranche", 1))
+            row["split_tranche"] = tranche
+            override = self._v7620_position_override(symbol)
+            mark = f"·형지시 +{float(override.get('target_pct', 0)):.0%} 이월" if override else ""
+            if split.get("close_bet"):
+                row["reason"] = f"[종가배팅{mark}·{split.get('watch', '')}] " + str(row.get("reason", ""))
+            else:
+                row["reason"] = f"[{tranche}차매수{mark}·{split.get('watch', '')}] " + str(row.get("reason", ""))
+        last = float(getattr(self, "_v7613_view_written", 0.0) or 0.0)
+        if time.monotonic() - last < 2.0:
+            return
+        self._v7613_view_written = time.monotonic()
+        holdings = []
+        for symbol, split in states.items():
+            position = positions.get(symbol)
+            if position is None:
+                continue
+            quote = getattr(self, "latest_quotes", {}).get(symbol)
+            current = float(getattr(quote, "price", 0) or 0) or float(position.entry_price)
+            commission, tax = self._v7609_cost_rates()
+            invested = float(position.entry_cost)
+            value = current * int(position.quantity) * (1 - commission - tax)
+            tranche = int(split.get("tranche", 1))
+            holdings.append({
+                "symbol": symbol, "name": split.get("name", ""), "tranche": tranche,
+                "quantity": int(position.quantity), "avg_price": float(position.entry_price),
+                "current_price": current, "invested": invested, "pnl": value - invested,
+                "pnl_pct": (value / invested - 1) * 100 if invested > 0 else 0.0,
+                "target_price": float(position.target_price), "stop_price": float(position.stop_price),
+                "first_price": float(split.get("first_price", 0)), "first_time": split.get("first_time", ""),
+                "next_notional": _SPLIT13.notional_for(tranche + 1), "watch": split.get("watch", ""),
+                "fills": split.get("fills", []),
+            })
+        view = {
+            "updated": now.strftime("%H:%M:%S"), "date": now.date().isoformat(),
+            "cash": float(getattr(self.broker, "cash", 0.0) or 0.0), "reserved": self._v7613_reserved(), "committed": self._v7613_committed(),
+            "plan_text": (f"1차 {_SPLIT13.NOTIONALS[0] / 1e4:,.0f}만 → 2차 {_SPLIT13.NOTIONALS[1] / 1e4:,.0f}만 → "
+                          f"3차 {_SPLIT13.NOTIONALS[2] / 1e4:,.0f}만 · 추가매수는 직전가 -{_SPLIT13.ADD_MIN_GAP:.0%} 아래 · "
+                          "하루 운용한도 5,000만(오늘 매입 기준·이월분 제외) | 1차 목표 +2% · 추가 뒤 평단+0.5% · "
+                          "자동손절 없음 · 장마감 정리 없음(다음날로 이월)"),
+            "holdings": holdings, "closed": list(getattr(self, "_v7613_closed", [])),
+        }
+        try:
+            V7613_VIEW_FILE.parent.mkdir(parents=True, exist_ok=True)
+            temporary = V7613_VIEW_FILE.with_suffix(".tmp")
+            temporary.write_text(json.dumps(view, ensure_ascii=False, default=str), encoding="utf-8")
+            temporary.replace(V7613_VIEW_FILE)
+        except OSError:
+            pass
 
     @staticmethod
     def _flush_index(raw: list[Any], flush: Any) -> int:
@@ -6307,6 +8920,10 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
         return True
 
     def _scale_v76_from_raw(self, symbol: str, raw: list[Any], now: datetime) -> bool:
+        if self._v7619_blocked(symbol, "추가매수", now):
+            return False
+        if self._v7613_info(symbol) is not None:
+            return self._v7613_try_add(symbol, raw, now)
         position = self.broker.positions.get(symbol)
         if position is None or str(getattr(position, "pattern", "")) != PATTERN:
             return False
@@ -6355,6 +8972,9 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
     def _attempt_scale_in(self, bar: Any) -> bool:
         symbol = str(getattr(bar, "symbol", ""))
         position = self.broker.positions.get(symbol)
+        if position is not None and self._v7613_info(symbol) is not None:
+            # V7613: 분할매수 종목은 완성 1분봉 경로(_scale_v76_from_raw)에서만 추가매수한다.
+            return False
         # V7610: every pattern, including holdings routed to the inherited scale-in.
         window = _ENTRY_POLICY.blocked_window(datetime.now(KST))
         if position is not None and window:
@@ -6816,6 +9436,64 @@ v7525.VERSION = VERSION
 v57.VERSION = VERSION
 
 
+# ---------------------------------------------------------------------------
+# V7612 해시 잠금 파일의 숫자전용·우선주제외 검사를 실행 시점에만 교체한다.
+# 원본 파일은 바이트 그대로라 SHA256 체인은 유지된다. 실패해도 기동은 막지 않는다.
+import __future__ as _v7612_future  # noqa: E402
+import textwrap as _v7612_textwrap  # noqa: E402
+
+
+def _v7612_rebind(cls: type, name: str, pairs: tuple[tuple[str, str], ...], label: str) -> None:
+    patched = 0
+    for owner in cls.__mro__:
+        raw = owner.__dict__.get(name)
+        if raw is None:
+            continue
+        fn = raw.__func__ if isinstance(raw, (staticmethod, classmethod)) else raw
+        if not hasattr(fn, "__code__"):
+            continue
+        try:
+            source = _v7612_textwrap.dedent(inspect.getsource(fn))
+        except (OSError, TypeError):
+            continue
+        if not all(old in source for old, _ in pairs):
+            continue
+        new = source
+        for old, new_text in pairs:
+            new = new.replace(old, new_text)
+        namespace: dict[str, Any] = {}
+        globals_ = fn.__globals__
+        globals_["_v7612_is_code"] = _v7612_is_code
+        globals_["_v7612_allow_preferred"] = _v7612_allow_preferred
+        code = compile(new, fn.__code__.co_filename, "exec",
+                       flags=_v7612_future.annotations.compiler_flag, dont_inherit=True)
+        exec(code, globals_, namespace)
+        setattr(owner, name, namespace[name])
+        patched += 1
+    V7612_PATCH_STATUS[label] = f"적용{patched}" if patched else "대상없음"
+
+
+def _v7612_apply_symbol_patches() -> None:
+    numeric = r'if not re.fullmatch(r"\d{6}", symbol):'
+    try:
+        if V7612_ALLOW_ALNUM_CODES:
+            _v7612_rebind(V7609OneMinuteKiwoomClient, "_parse_rank_candidates",
+                          ((numeric, "if not _v7612_is_code(symbol):"),), "후보수집_영문코드")
+            _v7612_rebind(V7600ThreeStageEngine, "_v7588_add_interest",
+                          ((numeric, "if not _v7612_is_code(symbol):"),), "관심추가_영문코드")
+        if V7612_ALLOW_PREFERRED:
+            _v7612_rebind(V7609OneMinuteKiwoomClient, "_excluded_name",
+                          (('or bool(re.search(r"우(?:B|C)?$", name))',
+                            'or (not _v7612_allow_preferred() and bool(re.search(r"우(?:B|C)?$", name)))'),),
+                          "우선주허용")
+    except Exception as exc:  # 기동은 막지 않는다
+        V7612_PATCH_STATUS["오류"] = f"{type(exc).__name__}: {exc}"
+    print("[V7612] 종목범위 패치 " + json.dumps(V7612_PATCH_STATUS, ensure_ascii=False), flush=True)
+
+
+_v7612_apply_symbol_patches()
+
+
 def runtime_identity() -> dict[str, Any]:
     value = dict(parent.runtime_identity())
     value.update({
@@ -6834,7 +9512,7 @@ def runtime_identity() -> dict[str, Any]:
             f"프라임 시그널 대시보드 (PAPER) · {VERSION} · 수정 {BUILD_STAMP}"
         ),
         "dashboard_fit": "Windows work area minus measured frame; compact fixed-height bottom panels",
-        "dashboard_main_ratio": "stock table 80% / guide panel 20% with 220px wrapped descriptions",
+        "dashboard_main_ratio": "stock table 55% / 0600-style chart 45% (guide panel removed), table font 11pt",
         "dashboard_sold_row_layout": "56px row height; 48px sequence column; 210px stock-name column",
         "dashboard_scrollbars": "one vertical and one horizontal scrollbar per requested history/preview panel",
         "dashboard_name_recovery": "live name -> durable stage timeline -> verified fallback",
@@ -6863,11 +9541,7 @@ def runtime_identity() -> dict[str, Any]:
         "ma5_reentry_confirmation": ">=2% pullback, or 1.8~2.0% only with bullish recovery followed by lower-volume MA5 support",
         "bottom_volume_ma5_entry": "post-interest volume floor <=30% of flush and <=45% of context, then MA5 cross or hold within three bars",
         "weak_market_exception": "no SHOCK override; only positive stock return outperforming proxy indices by >=1.0%p",
-        "new_entry_fast_failure": (
-            "Net -1.5% default; support deferral "
-            + ("enabled" if _EXIT_POLICY.SUPPORT_DEFER else "disabled (V7610 immediate stop)")
-            + "; net -3% gap guard"
-        ),
+        "new_entry_fast_failure": "PAPER automatic price stops disabled (PAPER-NOSTOP-001)",
         "v7610_entry_policy": {
             "early_volume_buy_enabled": _ENTRY_POLICY.EARLY_VOLUME_BUY_ENABLED,
             "blocked_new_entry_windows": tuple(
@@ -6875,14 +9549,15 @@ def runtime_identity() -> dict[str, Any]:
             ),
             "pullback_rule": f"{_PULLBACK.RULE_ID}: shadow record only, no order",
         },
-        "hard_stop_pct": _EXIT_POLICY.MAX_LOSS,
-        "default_stop_pct": V7609_FIXED_STOP_LOSS_PCT,
+        "automatic_stop_enabled": V7632_PAPER_AUTO_STOP,
+        "hard_stop_pct": _EXIT_POLICY.MAX_LOSS if V7632_PAPER_AUTO_STOP else None,
+        "default_stop_pct": V7609_FIXED_STOP_LOSS_PCT if V7632_PAPER_AUTO_STOP else None,
         "net_target_pct": V7609_TAKE_PROFIT_PCT,
         "stage_admission_lag": (
             f"관찰/관심 표시단계는 완성 1분봉 최대 {V7609_STAGE_BAR_MAX_LAG_MIN}분 지연까지 판정, "
             "주문 경로는 직전 1분 완성봉만 사용"
         ),
-        "fixed_stop_loss": "valid tick nearest 98.5% of average entry, safer tie, prefer 1.4%-1.6% loss; actual fill loss is not guaranteed",
+        "fixed_stop_loss": "PAPER automatic stops disabled; stop_price=0; targets and explicit manual sells retained",
         "dashboard_exact_times": "real stage-transition ledger only; synthetic 09:00 화면행최초확인 clocks are rejected",
         "dashboard_fill_details": "holding and sold rows show exact HH:MM:SS PAPER fill time and price",
         "dashboard_active_stage_only": "departed, currently held, and same-day sold symbols are excluded from lower active stages",
@@ -8345,8 +11020,8 @@ def self_check() -> list[tuple[str, bool, str]]:
             "관심 재편입 뒤 새 하락음봉을 기준봉으로 갱신 · 시장·데이터·위험 차단은 유지",
         ),
         (
-            "종목표80대20가독성",
-            all(token in link_source for token in ("weight=80", "weight=20", "rowheight=80 if sold_view else 28", '"no": 48 if sold_view else 36', '"name": 210 if sold_view else 170', "wraplength=220")),
+            "종목표55대차트45가독성",
+            all(token in link_source for token in ("weight=V7614_TABLE_PANE", "weight=V7614_CHART_PANE", "rowheight=92 if sold_view else 42", '"no": 40 if sold_view else 36', '"name": 150 if sold_view else 128', "_v7614_install_chart(root)")),
             ident["dashboard_main_ratio"],
         ),
         (

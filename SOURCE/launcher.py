@@ -254,14 +254,14 @@ def credential_values(values: dict[str, str]) -> tuple[str, str, str, str]:
 def credential_priority(values: dict[str, str]) -> int:
     """Prefer Kiwoom-named credentials over generic REST test variables."""
 
-    if values.get("KIWOOM_ACCESS_TOKEN", "").strip():
-        return 3
     if values.get("KIWOOM_APP_KEY", "").strip() and (
         values.get("KIWOOM_SECRET_KEY", "").strip()
         or values.get("KIWOOM_APP_SECRET", "").strip()
     ):
-        return 2
+        return 3
     if values.get("APP_KEY", "").strip() and values.get("APP_SECRET", "").strip():
+        return 2
+    if values.get("KIWOOM_ACCESS_TOKEN", "").strip():
         return 1
     return 0
 
@@ -272,7 +272,17 @@ def install_credentials(values: dict[str, str]) -> bool:
     token, app, secret, base_url = credential_values(values)
     if not token and not (app and secret):
         return False
-    if token:
+    current_app = os.getenv("KIWOOM_APP_KEY", "").strip()
+    current_secret = (os.getenv("KIWOOM_SECRET_KEY", "") or os.getenv("KIWOOM_APP_SECRET", "")).strip()
+    current_base = os.getenv("KIWOOM_BASE_URL", "").strip().rstrip("/")
+    # Never combine a partial credential pair or an explicit server with a
+    # different source. An existing token is retained for account verification.
+    if app and secret and ((current_app and current_app != app) or
+                           (current_secret and current_secret != secret)):
+        return False
+    if current_base and base_url and current_base != base_url.rstrip("/"):
+        return False
+    if token and not os.getenv("KIWOOM_ACCESS_TOKEN", "").strip():
         os.environ["KIWOOM_ACCESS_TOKEN"] = token
     if app and secret:
         os.environ["KIWOOM_APP_KEY"] = app
@@ -289,10 +299,13 @@ def recover_existing_credentials() -> str:
     never copied into the ZIP and never written to the startup log.
     """
 
-    if os.getenv("KIWOOM_ACCESS_TOKEN", "").strip() or (
-        os.getenv("KIWOOM_APP_KEY", "").strip()
-        and os.getenv("KIWOOM_SECRET_KEY", "").strip()
+    # A token string is not proof of validity and cannot renew itself. Keep it,
+    # but also recover a complete key pair for the client's bounded refresh.
+    if os.getenv("KIWOOM_APP_KEY", "").strip() and (
+        os.getenv("KIWOOM_SECRET_KEY", "").strip()
+        or os.getenv("KIWOOM_APP_SECRET", "").strip()
     ):
+        install_credentials(dict(os.environ))
         return "environment"
 
     # Fast path after the first successful discovery.  The file stores only
@@ -305,10 +318,11 @@ def recover_existing_credentials() -> str:
     # A cached generic APP_KEY/APP_SECRET file may be an unrelated REST test
     # file.  Keep it only as a fallback while searching for explicit Kiwoom
     # credentials first.
-    if credential_priority(cached) >= 2 and install_credentials(cached):
+    if credential_priority(cached) == 3 and install_credentials(cached):
         return "cached-pointer"
 
     candidates = [
+        cached_path,
         CORE / "v73_keys.env",
         ROOT / "v73_keys.env",
         CORE / ".env",
@@ -357,7 +371,7 @@ def recover_existing_credentials() -> str:
         except OSError:
             pass
         return "recovered-sibling"
-    return "not-found"
+    return "environment" if os.getenv("KIWOOM_ACCESS_TOKEN", "").strip() else "not-found"
 
 
 def show_error(title: str, message: str) -> None:

@@ -184,6 +184,20 @@ class ObservationFirstRiseTests(unittest.TestCase):
         call(probe, '005930', [bar(0, close=10500)], START + timedelta(minutes=1))
         probe._v7588_publish.assert_called_once()
 
+        # A past rise must not create a fresh admission during its pullback.
+        pullback = [bar(0, close=10500), bar(1, close=10200)]
+        probe._v7588_phase.clear()
+        probe._v7588_publish.reset_mock()
+        call(probe, '005930', pullback, START + timedelta(minutes=2))
+        probe._v7588_publish.assert_not_called()
+
+        # Tightening new admission must not remove or downgrade existing stages.
+        for stage in ('OBSERVED', 'INTEREST', 'PREBUY', 'MARKET_DEFERRED'):
+            probe._v7588_phase['005930'] = stage
+            call(probe, '005930', pullback, START + timedelta(minutes=2))
+            self.assertEqual(probe._v7588_phase['005930'], stage)
+        probe._v7588_publish.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
