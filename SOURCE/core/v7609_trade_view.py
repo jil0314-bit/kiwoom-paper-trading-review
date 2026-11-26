@@ -33,12 +33,15 @@ TRANCHE_TAG = 'tranche'   # V7633: 2·3차까지 산 종목 아래에 차수별 
 #    매도 시각·가격 한 칸, 매도사유는 짧은 이름(평단+0.5%·목표+2% 등, 누르면 전체)
 HOLD_SHOWN = ('no', 'name', 'buy_when', 'price_combo', 'quantity', 'invested', 'net_combo')
 SOLD_SHOWN = ('no', 'name', 'when_combo', 'buy_price', 'invested', 'net_combo', 'sell_reason')
+# V7636 (2026-11-26 형 지시 '색을 살짝 더 구분되게 다른 톤으로, 글자는 잘 보이게'):
+#   종목마다 번갈아 칠하는 두 색을 '같은 색의 진하기 차이'에서 '서로 다른 색 계열(청록↔남색 등)'로 바꿈.
+#   두 색 모두 밝은 글자(흰색 대비 10:1 이상, 빨강·파랑 손익 글자 4:1 이상)가 잘 보이는 어둡지 않은 톤.
 BANDS = {   # (짝, 홀) 배경
-    HOLD: {'t': ('#0c4a50', '#083b40'), 'c': ('#4d3712', '#3e2c0e')},
-    '매도종목': {'t': ('#4b1b24', '#3b141c'), 'c': ('#4d3712', '#3e2c0e')},
+    HOLD: {'t': ('#123f4a', '#283d63'), 'c': ('#4d3712', '#3d3a1e')},
+    '매도종목': {'t': ('#4f1f2b', '#3d2752'), 'c': ('#4d3712', '#3d3a1e')},
 }
-TRANCHE_FG = '#b4c6d8'
-CHIP_TODAY = {HOLD: '#0c4a50', '매도종목': '#4b1b24'}
+TRANCHE_FG = '#c3d3e4'
+CHIP_TODAY = {HOLD: '#123f4a', '매도종목': '#4f1f2b'}
 CHIP_CARRY = '#4d3712'
 
 

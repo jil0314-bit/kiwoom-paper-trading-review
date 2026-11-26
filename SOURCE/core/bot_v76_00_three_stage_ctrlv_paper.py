@@ -48,7 +48,7 @@ import v7628_query_guard as _QUERY_GUARD
 
 
 VERSION = "V76.09-FOREGROUND-APP-ACTIVATE-0600-LINK-PAPER"
-BUILD_STAMP = "2026-11-26 V7635b 바닥매수 수정(바닥 -1% 이탈 무효·마지막 저점 뒤 반전·1분 5선 종가 1봉) · V7634 매수·매도표 새 디자인·분할 1:2:6·추가매수 1% 간격"
+BUILD_STAMP = "2026-11-26 V7636 화면(차트 십자선 유지·스크롤바·왼쪽끌기 전체보기·1분봉·5/20/60 굵게 · 등락률 빨강/파랑 · 합계칸 크게 · 보류내용 안 잘림) · V7635b 바닥매수 수정"
 V7609_LEGACY_MA5_ONLY_ENTRY = False
 V7609_LEGACY_PRE_MA5_HALF_ENTRY = False
 BASE_DIR = Path(__file__).resolve().parent
@@ -1143,8 +1143,9 @@ _v7609_prune_collaboration_hub_today()
 _V7609_SELL_BODY = "#5a1820"
 _V7609_SELL_BAND = "#b6383f"
 _V7609_SELL_TEXT = "#ffe3e6"
-_V7609_SELL_GAIN_TEXT = "#8dffc0"
-_V7609_SELL_LOSS_TEXT = "#ffb2b2"
+# V7636 (2026-11-26 형 지시): 상승·수익 = 빨강, 하락·손실 = 파랑(한국식). 어두운 띠 위에서도 잘 보이는 밝은 톤.
+_V7609_SELL_GAIN_TEXT = "#ff8a8a"
+_V7609_SELL_LOSS_TEXT = "#7ec4ff"
 _V7609_VERIFIED_NAME_FIXES = {
     # The PAPER fill ledger stores only the code.  This carried position was
     # sold before today's candidate scan restored its Korean display name.
@@ -2455,7 +2456,10 @@ def _v7634_zebra_tag(tree: Any, tag: str) -> str:
     if not background.startswith("#") or len(background) != 7:
         return tag
     rgb = [int(background[i:i + 2], 16) for i in (1, 3, 5)]
-    light = "#" + "".join(f"{min(255, int(c + (255 - c) * 0.10)):02x}" for c in rgb)
+    # V7636 (형 지시 '살짝 더 구분되게 다른 톤으로, 글자는 잘 보이게'): 흰색 10% → 회청색(#9fb3d1) 20% 섞기.
+    #   같은 단계색 계열을 지키면서 한 톤 밝고 차분한 색 → 줄 구분이 뚜렷, 밝은 글자 대비 5:1 이상 유지.
+    tint = (0x9f, 0xb3, 0xd1)
+    light = "#" + "".join(f"{min(255, round(c * 0.80 + t * 0.20)):02x}" for c, t in zip(rgb, tint))
     options = {"background": light}
     if foreground:
         options["foreground"] = foreground
@@ -2516,6 +2520,52 @@ def _v7633_compact_header(root: Any) -> None:
                 strip = box.master
                 if strip.winfo_manager() == "pack":
                     strip.pack_configure(pady=(0, 3))
+        except Exception:
+            continue
+
+
+def _v7636_swap_header_sizes(root: Any) -> None:
+    """V7636 (2026-11-26 형 지시): 단계카드(관찰·관심·매수직전·오늘매수매도·시장보류)와
+    합계칸(보유합계·평가손익·실현손익·총손익·가용현금)의 크기를 맞바꾼다.
+    단계카드 → 한 줄(제목 왼쪽 · 건수 오른쪽, 12pt) / 합계칸 → 두 줄(이름 위 10pt · 금액 아래 16pt 굵게).
+    화면 배치 전용 — 값·색·클릭 동작은 그대로. 여러 번 불려도 결과가 같다."""
+    import tkinter as tk
+    from tkinter import ttk
+    summary_names = {"보유합계", "평가손익", "실현손익(오늘)", "총손익", "가용현금"}
+    pending = list(root.winfo_children())
+    while pending:
+        widget = pending.pop()
+        try:
+            pending.extend(widget.winfo_children())
+        except Exception:
+            continue
+        try:
+            if isinstance(widget, tk.Label) and re.match(r"^\d{2}\s", str(widget.cget("text") or "")):
+                band = widget.master
+                card = band.master
+                if not isinstance(band, tk.Frame) or not isinstance(card, tk.Frame) or band.winfo_manager() != "pack":
+                    continue
+                if not any(isinstance(c, tk.Label) and c.winfo_manager() == "pack" for c in card.winfo_children()
+                           if c is not band):
+                    continue     # 단계 안내판(오른쪽 '단계별 의미')의 줄은 건드리지 않는다
+                band.configure(pady=3)
+                band.pack_configure(side="left", fill="y")
+                widget.configure(font=(V7614_TABLE_FONT[0], 10, "bold"), padx=4)
+                widget.pack_configure(fill="both", expand=True)
+                for child in card.winfo_children():
+                    if child is band or not isinstance(child, tk.Label) or child.winfo_manager() != "pack":
+                        continue
+                    child.configure(font=(V7614_TABLE_FONT[0], 12, "bold"), pady=1)
+                    child.pack_configure(side="left", fill="both", expand=True, padx=(4, 6))
+            elif isinstance(widget, ttk.Label) and str(widget.cget("text") or "") in summary_names:
+                box = widget.master
+                box.configure(padding=(10, 3))
+                widget.configure(font=(V7614_TABLE_FONT[0], 10, "bold"))
+                widget.pack_configure(side="top")
+                for child in box.winfo_children():
+                    if isinstance(child, ttk.Label) and child is not widget and child.winfo_manager() == "pack":
+                        child.configure(font=(V7614_TABLE_FONT[0], 16, "bold"))
+                        child.pack_configure(side="top")
         except Exception:
             continue
 
@@ -3181,6 +3231,64 @@ def _install_gui_fit_and_colors() -> None:
                     )
                 except Exception:
                     pass
+            _v7636_watch_columns(tree)     # V7636: 표 폭에 맞춰 보류내용 열이 잘리지 않게(크기 바뀔 때마다)
+            try:
+                tree.after_idle(lambda t=tree: _v7636_fit_columns(t))
+            except Exception:
+                pass
+
+    def _v7636_fit_columns(tree: Any) -> None:
+        """V7636 (형 지시): 종목표 열을 표 칸 폭에 꼭 맞춘다 → 맨 오른쪽 '조건·손익·보류내용'이 잘리지 않게.
+        넓기만 하던 시각 열을 줄이고 남는 폭은 모두 보류내용 열로."""
+        try:
+            available = int(tree.winfo_width() or 0) - 4
+            if available < 300:
+                return
+            display = tree.cget("displaycolumns")
+            visible = tuple(tree.cget("columns")) if display in ("#all", ("#all",)) else tuple(display)
+            if "reason" not in visible:
+                return
+            sold_view = int(ttk.Style(tree).lookup("R20Main.Treeview", "rowheight") or 0) >= 80
+            holding_view = "basis" in visible
+            fixed = {"no": 40, "stage": 84, "name": 150 if sold_view else 126, "current": 76, "change": 92,
+                     "basis": 84, "qty": 56, "stage_time": 116 if (sold_view or holding_view) else 84}
+            widths = {c: fixed.get(c, int(tree.column(c, "width") or 60)) for c in visible if c != "reason"}
+            spare = available - sum(widths.values())
+            if spare < 200:                      # 좁은 화면: 종목명·단계를 조금 줄여 보류내용 최소 폭 확보
+                for column, cut in (("name", 22), ("stage", 10), ("current", 6)):
+                    if column in widths and spare < 200:
+                        widths[column] -= cut
+                        spare += cut
+            # 옛 버전(V75.90/91)이 Treeview.column 을 감싸 '시각' 열을 155~260px 이상으로 강제해서
+            # 보류내용 열이 화면 밖으로 밀렸다 → 이 표에만 Tk 명령을 직접 써서 정한 폭을 그대로 넣는다.
+            def raw(column: str, width: int, minwidth: int, stretch: bool) -> None:
+                tree.tk.call(tree._w, "column", column, "-width", int(width), "-minwidth", int(minwidth),
+                             "-stretch", 1 if stretch else 0)
+            for column, width in widths.items():
+                if int(tree.column(column, "width") or 0) != width:
+                    raw(column, width, min(width, 36), False)
+            reason_width = max(160, spare)
+            if abs(int(tree.column("reason", "width") or 0) - reason_width) > 2:
+                raw("reason", reason_width, 120, True)
+        except Exception:
+            pass
+
+    def _v7636_watch_columns(tree: Any) -> None:
+        if getattr(tree, "_v7636_fit_bound", False):
+            return
+        tree._v7636_fit_bound = True
+        job = {"id": None}
+
+        def later(_event: Any = None) -> None:
+            if job["id"] is not None:
+                try:
+                    tree.after_cancel(job["id"])
+                except Exception:
+                    pass
+            job["id"] = tree.after(120, lambda: (job.update(id=None), _v7636_fit_columns(tree)))
+
+        tree.bind("<Configure>", later, add="+")
+        later()
 
     def _set_main_pane_ratio(root: Any) -> None:
         """Use the configured stock-table/chart ratio; preserve manual sash moves."""
@@ -3310,6 +3418,10 @@ def _install_gui_fit_and_colors() -> None:
             _v7620_fit_height(root)   # V7620: 2칸으로 줄였으면 남는 높이를 표에 돌려준다
         try:
             _v7633_compact_header(root)   # V7633: 머리 부분 30% 축소 → 표·차트가 그만큼 커진다
+        except Exception:
+            pass
+        try:
+            _v7636_swap_header_sizes(root)   # V7636: 단계카드 ↔ 합계칸 크기 맞바꿈
         except Exception:
             pass
         _apply_sold_card_palette(root)
@@ -3449,6 +3561,11 @@ def _install_gui_fit_and_colors() -> None:
                 font=("맑은 고딕", 10, "bold"),
             )
             self.tag_configure("R20_DEPARTED", background="#202a36", foreground="#91a5b8")
+        except Exception:
+            pass
+        try:   # V7636: 등락률 칸만 상승 빨강 · 하락 파랑(표는 줄 단위 색만 되므로 칸 위에 겹쳐 칠함)
+            import v7636_change_colors as change_colors
+            change_colors.attach(self, "change", font=(V7614_TABLE_FONT[0], V7614_TABLE_FONT[1], "bold"))
         except Exception:
             pass
 
@@ -3599,6 +3716,12 @@ def _install_gui_fit_and_colors() -> None:
         if getattr(self, "_v7595_main_stock_tree", False):
             # V7614: 등락률 부호를 ▲/▼로 크게 표시(표시 문자열만, 자체 완결 코드).
             values = list(kwargs.get("values", ()))
+            if len(values) > 4:   # V7636: '1.18'처럼 %·부호 없이 온 등락률도 '+1.18%'로
+                try:
+                    import v7636_change_colors as change_colors
+                    values[4] = change_colors.percent_text(values[4])
+                except Exception:
+                    pass
             if len(values) > 4 and isinstance(values[4], str) and values[4].strip()[:1] in {"+", "-"}:
                 change_text = values[4].strip()
                 try:
@@ -7796,8 +7919,29 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
             self._v7613_decorate_rows(final_rows, now)
         except Exception as exc:
             self.logger.warning("V7613 분할매수 화면표시 보류 | %s", type(exc).__name__)
+        try:
+            self._v7636_fill_day_change(final_rows, now)
+        except Exception as exc:   # 화면 보조 — 실패해도 줄은 그대로
+            self.logger.warning("V7636 등락률 채우기 보류 | %s", type(exc).__name__)
         snapshot["rows"] = final_rows
         return snapshot
+
+    def _v7636_fill_day_change(self, rows: list[dict[str, Any]], now: datetime) -> None:
+        """V7636 (형 지시): 모든 칸 종목에 현재(전일 대비) 등락률. 오늘 받은 시세가 있으면 그 값을 쓴다.
+        보유종목 칸은 원래대로 '매수후 등락률'(평단 대비)을 둔다. 읽기 전용 — 조회·주문 없음."""
+        quotes = getattr(self, "latest_quotes", {}) or {}
+        for row in rows:
+            if str(row.get("stage", "")) == "매수종목":
+                continue
+            symbol = str(row.get("symbol", "")).strip().zfill(6)
+            quote = quotes.get(symbol)
+            stamp = getattr(quote, "timestamp", None)
+            value = getattr(quote, "change_pct", None)
+            if (quote is not None and isinstance(stamp, datetime) and isinstance(value, (int, float))
+                    and (stamp if stamp.tzinfo else stamp.replace(tzinfo=KST)).astimezone(KST).date() == now.date()):
+                row["change_pct"] = float(value)
+            elif row.get("change_pct") in (None, "", "-"):
+                row["change_pct"] = row.get("return_pct", "")
 
     def run(self, *args: Any, **kwargs: Any) -> Any:
         """Forward a dashboard close request to the inherited normal stop flag."""
