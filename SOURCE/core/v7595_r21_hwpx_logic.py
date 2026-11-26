@@ -20,6 +20,9 @@ PREVIOUS_DAY_EXPLOSION_RATIO = 3.00
 OBS_ONE_MINUTE_RETURN = 0.015
 OBS_ONE_MINUTE_VOLUME_RATIO = 2.00
 OBS_SESSION_RISE = 0.05
+# 신규 관찰 편입은 현재 완성봉의 15봉 내 첫 +5% / 눌림 후 +3% 조건을 요구한다.
+# 과거 상승 이력만으로 새로 편입하지 않는다. 기존 편입 상태의 유지는 엔진이 담당한다.
+OBS_ALLOW_PRIOR_WAVE = False
 MORNING_LIQUIDITY_VOLUME = 200_000
 MORNING_LIQUIDITY_VALUE = 3_000_000_000.0
 EARLY_TURNOVER_VALUE = 5_000_000_000.0
@@ -250,12 +253,18 @@ def evaluate_observation_admission(
     rise = cc / low_price - 1.0
     # No backdated admission during a pullback, even if an earlier bar qualified.
     allowed = climbing and count <= 15 and cc * 100 >= low_price * (100 + threshold) and cv > 0
+    prior_wave = False
+    if not allowed and OBS_ALLOW_PRIOR_WAVE and wave >= 1 and cv >= 0:
+        allowed = True
+        prior_wave = True
     detail = (
         f"OBS-20260909-NWAVE·상승차수{wave if climbing else wave + 1}·기준+{threshold}%"
         f"·저점{low_time.strftime('%H:%M')}={low_price:,.0f}"
         f"·봉수{count}/15·완성종가{cc:,.0f}·저점대비{rise:+.2%}"
         f"·판정봉{today[-1][0].strftime('%H:%M')}"
     )
+    if prior_wave:
+        detail += f"·당일상승이력{wave}차(조정중)"
     reason = ("관찰편입=" if allowed else "관찰대기=") + detail
     return AdmissionEvidence(
         allowed, ("OBS-20260909-NWAVE",) if allowed else (), reason,

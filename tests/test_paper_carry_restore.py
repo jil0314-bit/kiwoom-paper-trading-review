@@ -186,8 +186,6 @@ class RestoreTests(unittest.TestCase):
         self.assertEqual(self.broker().positions, {})
 
     def test_split_tranches_and_first_buy_date_survive_multiple_days(self):
-        if 'def _v7613_states(' not in (CORE/'bot_v76_00_three_stage_ctrlv_paper.py').read_text(encoding='utf-8-sig'):
-            self.skipTest('Legacy public snapshot predates split-buy state; exercised on current production source')
         install(self.m)
         ns = dict(json=json, datetime=Clock, KST=KST, _SPLIT13=SimpleNamespace(MAX_TRANCHE=3),
                   V7613_STATE_FILE=self.folder/'split.json')

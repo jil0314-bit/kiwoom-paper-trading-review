@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import threading
 from typing import Any, Iterator, Mapping
@@ -88,6 +89,10 @@ class OrderIntentLedger:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self._lock = threading.RLock()
+        self._status_index: dict[str, dict[str, str]] = {}
+        self._index_file = None
+        self._index_offset = 0
+        self._index_mtime_ns = 0
 
     @contextmanager
     def _locked_file(self) -> Iterator[Any]:
@@ -133,6 +138,38 @@ class OrderIntentLedger:
             if str(record.get("order_intent_id", "")) == order_intent_id:
                 return record
         return None
+
+    def _latest_locked(self, handle: Any, order_intent_id: str) -> Mapping[str, Any] | None:
+        """Refresh compact status from appended rows under the existing file lock.
+
+        Re-reading/parsing the whole evidence ledger at every order boundary
+        delayed exits as the ledger grew.  The file remains the authority:
+        every process reads all unseen rows before deciding, and a replacement
+        or truncation invalidates this memory-only index. Malformed rows raise.
+        """
+        info = os.fstat(handle.fileno())
+        identity = (info.st_dev, info.st_ino)
+        if (identity != self._index_file or info.st_size < self._index_offset
+                or (info.st_size == self._index_offset
+                    and info.st_mtime_ns != self._index_mtime_ns)):
+            self._status_index.clear()
+            self._index_offset = 0
+            self._index_file = identity
+        handle.seek(self._index_offset)
+        while True:
+            line = handle.readline()
+            if not line:
+                break
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            self._status_index[str(record["order_intent_id"])] = {
+                "payload_hash": str(record.get("payload_hash", "")),
+                "status": str(record.get("status", "")),
+            }
+        self._index_offset = handle.tell()
+        self._index_mtime_ns = os.fstat(handle.fileno()).st_mtime_ns
+        return self._status_index.get(str(order_intent_id))
 
     @staticmethod
     def _record(
@@ -190,9 +227,7 @@ class OrderIntentLedger:
             evidence=dict(evidence or {}),
         )
         with self._lock, self._locked_file() as handle:
-            latest = self._latest_for(
-                self._records(handle), identity.order_intent_id
-            )
+            latest = self._latest_locked(handle, identity.order_intent_id)
             if latest is not None:
                 if str(latest.get("payload_hash", "")) != claim.payload_hash:
                     raise DuplicateOrderIntent(
@@ -226,9 +261,7 @@ class OrderIntentLedger:
         """Allow retry only when the final fill boundary was never reached."""
 
         with self._lock, self._locked_file() as handle:
-            latest = self._latest_for(
-                self._records(handle), claim.identity.order_intent_id
-            )
+            latest = self._latest_locked(handle, claim.identity.order_intent_id)
             if latest is None or str(latest.get("status", "")) != "CLAIMED":
                 return
             self._append(
@@ -245,8 +278,7 @@ class OrderIntentLedger:
         fill: Mapping[str, Any] | None = None,
     ) -> None:
         with self._lock, self._locked_file() as handle:
-            records = self._records(handle)
-            latest = self._latest_for(records, claim.identity.order_intent_id)
+            latest = self._latest_locked(handle, claim.identity.order_intent_id)
             if latest is None:
                 raise ValueError("PAPER 주문 의도 선점 기록이 없습니다")
             if str(latest.get("payload_hash", "")) != claim.payload_hash:
@@ -275,7 +307,7 @@ class OrderIntentLedger:
         if not self.path.exists():
             return ""
         with self._lock, self._locked_file() as handle:
-            latest = self._latest_for(self._records(handle), str(order_intent_id))
+            latest = self._latest_locked(handle, str(order_intent_id))
             return str(latest.get("status", "")) if latest is not None else ""
 
     def records(self) -> list[dict[str, Any]]:

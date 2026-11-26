@@ -4,7 +4,7 @@
 
 ## 먼저 읽기
 
-1. [AI 검토 규칙](AGENTS.md)
+1. [AI 검토 규칙](AGENTS.md) · [변경 기록](CHANGELOG.md)
 2. [현재 매매 기준](SPEC.md)
 3. [현재 로직 요약](V76_CURRENT_LOGIC_SUMMARY_2026-10-13.md)
 4. [실행 경로 지도](EXECUTION_MAP.md)

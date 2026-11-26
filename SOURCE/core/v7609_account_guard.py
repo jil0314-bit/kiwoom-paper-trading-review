@@ -18,7 +18,11 @@ def selected_account_matches(texts, verified_account):
         return False
     seen = set()
     for text in texts:
+        if re.search(r"[*●•Xx]{2,}[- ]?\d{2,}", str(text)):
+            return False
         for match in re.finditer(r"(?<![0-9])([0-9]{4}-?[0-9]{4}(?:-?[0-9]{2})?)(?![0-9])", str(text)):
             digits = match.group(1).replace("-", "")
+            if len(digits) == 10 and digits != str(verified_account).strip().replace("-", ""):
+                return False
             seen.add(digits[:8])
     return seen == {expected}
