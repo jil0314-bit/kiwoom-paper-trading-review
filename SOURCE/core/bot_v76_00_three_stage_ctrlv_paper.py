@@ -48,7 +48,7 @@ import v7628_query_guard as _QUERY_GUARD
 
 
 VERSION = "V76.09-FOREGROUND-APP-ACTIVATE-0600-LINK-PAPER"
-BUILD_STAMP = "2026-11-26 V7635 바닥매수 수정(바닥 이탈 무효·마지막 저점 뒤 반전·1분 5선 2봉 안착) · V7634 매수·매도표 새 디자인·분할 1:2:6·추가매수 1% 간격"
+BUILD_STAMP = "2026-11-26 V7635b 바닥매수 수정(바닥 -1% 이탈 무효·마지막 저점 뒤 반전·1분 5선 종가 1봉) · V7634 매수·매도표 새 디자인·분할 1:2:6·추가매수 1% 간격"
 V7609_LEGACY_MA5_ONLY_ENTRY = False
 V7609_LEGACY_PRE_MA5_HALF_ENTRY = False
 BASE_DIR = Path(__file__).resolve().parent

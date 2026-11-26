@@ -1,4 +1,4 @@
-"""V7635 (2026-11-26): 바닥매수(BOTTOM_MA5) — 바닥 이탈 무효 · 마지막 저점 이후 반전 · 1분 5선 2봉 안착.
+"""V7635 (2026-11-26): 바닥매수(BOTTOM_MA5) — 바닥 이탈 무효 · 마지막 저점 이후 반전 · 1분 5선(기본 종가 1봉, 형 결정 V7635b).
 
 에이치브이엠(295310) 11/26 실제 1분봉으로 10:34 오매수(10:33봉, 5선 걸침)를 재현하고 수정 후 판정을 확인한다.
 """
@@ -44,7 +44,7 @@ class V7635DefaultTests(unittest.TestCase):
         self.assertTrue(P.FLOOR_BREAK_RESET)
         self.assertEqual(P.FLOOR_BREAK_TOL, 0.01)
         self.assertTrue(P.FLOOR_REVERSAL_AFTER_LOW)
-        self.assertEqual(P.FLOOR_MA5_SETTLE_BARS, 2)
+        self.assertEqual(P.FLOOR_MA5_SETTLE_BARS, 1)          # V7635b 형 결정: 1봉
 
     def test_1033_touch_is_not_bought(self):
         # 10:33 종가 58,300 vs 1분 MA5 58,280 (20원 걸침), 바닥 59,600은 10:28부터 -1% 넘게 이탈 → 사지 않는다
@@ -58,12 +58,19 @@ class V7635DefaultTests(unittest.TestCase):
             self.assertTrue(bought(r))
             self.assertEqual(r["floor_index"], 126)          # 10:17 바닥을 그대로 재사용했던 것
 
-    def test_1019_one_bar_above_ma5_is_not_settled(self):
-        r = judge("10:19")                                   # 10:18 종가 59,900 < MA5 60,180 → 1봉만 위
-        self.assertEqual((r["route"], r["buy"]), ("FLOOR", False))
+    def test_1019_one_bar_above_ma5_buys_with_default(self):
+        r = judge("10:19")                                   # 바닥 10:17 직후, 10:18 밑꼬리 뒤 10:19 종가 60,200 ≥ MA5 60,080
+        self.assertTrue(bought(r))
+        self.assertIn("5선안착", r["reason"])
+
+    def test_1019_not_bought_when_two_bars_required(self):
+        with mock.patch.object(P, "FLOOR_MA5_SETTLE_BARS", 2):  # 10:18 종가 59,900 < MA5 60,180 → 1봉만 위
+            r = judge("10:19")
+            self.assertEqual((r["route"], r["buy"]), ("FLOOR", False))
 
     def test_1020_two_bars_settled_after_floor(self):
-        r = judge("10:20")                                   # 10:19·10:20 종가 둘 다 1분 MA5 위
+        with mock.patch.object(P, "FLOOR_MA5_SETTLE_BARS", 2):  # 10:19·10:20 종가 둘 다 1분 MA5 위
+            r = judge("10:20")
         self.assertTrue(bought(r))
         self.assertIn("5선안착", r["reason"])
         self.assertEqual((r["flush_index"], r["floor_index"]), (125, 126))
