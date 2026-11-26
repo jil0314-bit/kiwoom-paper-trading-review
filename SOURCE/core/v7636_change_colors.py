@@ -10,8 +10,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-UP_COLOR = "#ff4b4b"
-DOWN_COLOR = "#4ba3ff"
+UP_COLOR = "#ffa3a3"     # V7637: 어두운 줄 색 위에서도 잘 보이는 밝은 빨강(대비 4:1 이상)
+DOWN_COLOR = "#a8d8ff"   # V7637: 밝은 파랑
 FLAT_COLOR = "#c8d2dc"
 TICK_MS = 300
 _NUMBER = re.compile(r"[-+]?\d+(?:[.,]\d+)?")

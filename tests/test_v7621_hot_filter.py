@@ -50,8 +50,17 @@ class HotFilterTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)                                   # 하루 한 번만 조회
 
     def test_below_threshold_allowed(self):
-        item, _ = self.item([10000, 10000, 12000, 13000, 14900])          # +49%
+        # V7637: 3일 +30% 미만이면서 5일 +50% 미만 → 허용
+        item, _ = self.item([10000, 10000, 11000, 12000, 13000, 12900])     # 3일 +29% · 5일 +29%
         self.assertEqual(item._v7621_hot_reason("181710"), "")
+
+    def test_v7637_three_day_30_blocked(self):
+        item, _ = self.item([10000, 10000, 10000, 11000, 12000, 13100])     # 3일 +31%
+        self.assertEqual(item._v7621_hot_reason("181710"), "최근3일 +31% 급등 제외")
+
+    def test_v7637_five_day_50_blocked(self):
+        item, _ = self.item([10000, 11000, 12000, 12500, 13000, 15200])     # 5일 +52% (3일 +27%)
+        self.assertEqual(item._v7621_hot_reason("181710"), "최근5일 +52% 급등 제외")
 
     def test_fetch_failure_does_not_block(self):
         item, calls = self.item([1, 1, 1, 1, 1], fail=True)

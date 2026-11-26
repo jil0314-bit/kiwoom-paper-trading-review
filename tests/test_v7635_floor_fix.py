@@ -40,6 +40,16 @@ def bought(res):
 
 
 class V7635DefaultTests(unittest.TestCase):
+    # V7637: 옛 바닥매수 경로는 기본 꺼짐(통합 경로가 대신). 이 시험은 바닥 함수 자체의 V7635 수정만 확인한다.
+    def setUp(self):
+        patcher = mock.patch.object(P, "FLOOR_ENABLED", True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for name in ("UNIFIED_ENABLED", "BREAKOUT_ENABLED"):
+            patcher = mock.patch.object(P, name, False)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def test_switches_on(self):
         self.assertTrue(P.FLOOR_BREAK_RESET)
         self.assertEqual(P.FLOOR_BREAK_TOL, 0.01)

@@ -84,6 +84,31 @@ PULLBACK_OPEN_GRACE_BARS = 0   # 켜려면 3
 #    (지수 급락 보류 등으로 첫 신호를 놓치면 그날 다시는 못 사던 문제 — 에이피알 11:18~20 재바닥)
 PULLBACK_REARM = False
 
+# V7637 (2026-11-26 형 결정) — 1차 진입 경로 정리: '눌림목' + '통합(투매 2회형 바닥)' 두 개만 쓴다.
+#   형 통합안: 1차 상승(거래 폭발) → 눌림 중 대량 하락음봉(단타 투매) 2번 이상 → 고점 이후 가장 작은 거래량의
+#   바닥 봉(양봉·아래꼬리·작은 몸통) → 1분 5선 위 종가에서 바로 매수.  1차 상승 폭은 형과 4%로 합의.
+#   보완(재현 근거): 5선 위 종가 1봉(2봉 확인은 매번 손해), 투매 = 직전 5봉 평균 3배, 09:20 전 신호면 그날 포기,
+#   전일 종가 위에서만, 고점 대비 8% 넘게 밀리면 포기, 투매·바닥 저가 1% 이탈이면 투매부터 다시, 13:00까지.
+#   재현(1:3:9, A 7/27~11/6 · B 11/13~11/24): 현행 +379만/-259만(최악 -83만)
+#     → 눌림목만 +244만/-58만 · 통합(5%) +131만/+46만 · 눌림목+통합(먼저 나온 신호) +303만/-12만(최악 -48만)
+#   돌파·기존 바닥매수·패턴A/B는 끈다(바닥만 끄면 돌파가 그 자리를 차지해 최근 기간 -178만).
+BREAKOUT_ENABLED = False
+FLOOR_ENABLED = False
+PATTERN12_ENABLED = False
+UNIFIED_ENABLED = True
+UNIFIED_RISE = 0.04            # 1차 상승: 당일 저점(전일 종가와 시가 중 낮은 쪽에서 시작) 대비 +4%
+UNIFIED_RISE_VOL = 3.0         # 그 상승 구간 최대 거래량 ≥ 상승 전 20봉 거래량 중앙값의 3배(앞 봉이 10개 미만이면 면제)
+UNIFIED_FLUSH_MULT = 3.0       # 투매 음봉: 종가 < 시가·전 봉 종가, 거래량 ≥ 직전 5봉 평균의 3배
+UNIFIED_FLUSHES = 2            # 투매 음봉 2번 이상(형 지시 — 1번이면 최근 기간 크게 손해)
+UNIFIED_DRY = 0.35             # 바닥 봉 거래량 ≤ 투매 최대 거래량의 35% 이면서 고점 이후 가장 작은 거래량
+UNIFIED_HOLD = 8               # 바닥 봉부터 이 봉 수 안에 5선 위 종가
+UNIFIED_SETTLE = 1             # 5선 위 종가 연속 봉 수
+UNIFIED_PULL_MAX = 0.08        # 고점 대비 이보다 깊게 밀리면 그날 포기
+UNIFIED_BREAK_TOL = 0.01       # 투매·바닥 저가를 1% 넘게 깨면 그 바닥은 무효(투매부터 다시 셈)
+UNIFIED_FROM = time(9, 20)     # 첫 매수 신호가 이보다 이르면 그날 포기
+UNIFIED_UNTIL = time(13)
+UNIFIED_ABOVE_PREV_CLOSE = True
+
 
 def in_session(now):
     return time(8) <= volume5._stamp(now).time() < time(20)
@@ -360,6 +385,97 @@ def _pullback(rows, previous_close):
                 reason='상승눌림·1차+5%·고점대비3~8%·시가유지·거래바닥15%·' + tail)
 
 
+def _unified_state(rows, previous_close):
+    """V7637 통합 경로 상태기계. 오늘 09:00~ 봉만 본다.
+    돌려주는 값: (bars, 'buy'|'wait'|None, 신호 봉(대기면 바닥 봉) 위치, 마지막 투매 위치, 투매 횟수, 바닥 봉 위치)."""
+    if not rows or not previous_close or previous_close <= 0:
+        return [], None, None, None, 0, None
+    day = volume5._stamp(rows[-1]['timestamp']).date()
+    bars = [b for b in rows if volume5._stamp(b['timestamp']).date() == day
+            and time(9) <= volume5._stamp(b['timestamp']).time() < time(15, 20)]
+    if len(bars) < 6:
+        return bars, None, None, None, 0, None
+    anchor_low, anchor_i = min(float(previous_close), bars[0]['low']), 0
+    peak_i = peak = None
+    flushes, bottom, crossed = [], None, 0
+    for i, b in enumerate(bars):
+        if peak is None:
+            if b['low'] < anchor_low:
+                anchor_low, anchor_i = b['low'], i
+            if b['high'] >= anchor_low * (1 + UNIFIED_RISE):
+                lead = [x['volume'] for x in bars[anchor_i:i + 1]]
+                before = [x['volume'] for x in bars[max(0, anchor_i - 20):anchor_i]]
+                if len(before) < 10 or max(lead) >= UNIFIED_RISE_VOL * max(1.0, median(before)):
+                    peak_i, peak = i, b['high']
+            continue
+        if b['high'] > peak:                       # 새 고점 → 새 1차 상승 다리, 투매·바닥 다시 셈
+            peak_i, peak, flushes, bottom, crossed = i, b['high'], [], None, 0
+            continue
+        if b['close'] < anchor_low or b['low'] < peak * (1 - UNIFIED_PULL_MAX):
+            return bars, None, None, None, 0, None   # 1차 상승을 다 까먹었거나 너무 깊은 눌림 → 그날 포기
+        refs = [x['volume'] for x in bars[max(0, i - 5):i]]
+        if (len(refs) == 5 and b['close'] < b['open'] and b['close'] < bars[i - 1]['close']
+                and b['volume'] >= UNIFIED_FLUSH_MULT * max(1.0, mean(refs))):
+            flushes.append(i)
+            bottom, crossed = None, 0
+            continue
+        if len(flushes) < UNIFIED_FLUSHES:
+            continue
+        floor_low = min(bars[f]['low'] for f in flushes[-UNIFIED_FLUSHES:])
+        if bottom is not None:
+            floor_low = min(floor_low, bars[bottom]['low'])
+        if b['low'] < floor_low * (1 - UNIFIED_BREAK_TOL):
+            flushes, bottom, crossed = [], None, 0  # 바닥 이탈 → 투매부터 다시
+            continue
+        if bottom is None:
+            since = [x['volume'] for x in bars[peak_i + 1:i]]
+            span, body = b['high'] - b['low'], abs(b['close'] - b['open'])
+            wick = min(b['close'], b['open']) - b['low']
+            shape = (b['close'] > b['open'] or (span > 0 and wick >= body and wick >= 0.3 * span)
+                     or (span > 0 and body <= 0.35 * span))
+            if (since and b['volume'] <= min(since) and shape
+                    and b['volume'] <= UNIFIED_DRY * max(bars[f]['volume'] for f in flushes)):
+                bottom = i
+            else:
+                continue
+        if i - bottom > UNIFIED_HOLD:
+            bottom, crossed = None, 0
+            continue
+        if i < 4 or b['close'] < _ma5_close(bars, i):
+            crossed = 0
+            continue
+        crossed += 1
+        if crossed < UNIFIED_SETTLE:
+            continue
+        clock = volume5._stamp(b['timestamp']).time()
+        if (clock >= UNIFIED_UNTIL or clock < UNIFIED_FROM
+                or (UNIFIED_ABOVE_PREV_CLOSE and b['close'] < float(previous_close))):
+            return bars, None, None, None, 0, None   # 첫 신호가 13시 이후·09:20 전·전일 종가 아래 → 그날 포기
+        return bars, 'buy', i, flushes[-1], len(flushes), bottom
+    if bottom is not None:
+        return bars, 'wait', bottom, flushes[-1], len(flushes), bottom
+    return bars, None, None, None, len(flushes), None
+
+
+def _unified(rows, previous_close):
+    if not UNIFIED_ENABLED:
+        return None
+    bars, state, index, flush_i, count, bottom = _unified_state(rows, previous_close)
+    if state is None:
+        return None
+    to_rows = {str(b['timestamp']): n for n, b in enumerate(rows)}
+    flush_index = to_rows.get(str(bars[flush_i]['timestamp']))
+    if state == 'buy':
+        if index != len(bars) - 1 or bars[index]['timestamp'] != rows[-1]['timestamp']:
+            return None                            # 하루 한 번: 지난 봉의 신호는 다시 쓰지 않는다
+        return dict(route='UNIFIED', buy=True, episode=bars[index]['timestamp'], flush_index=flush_index,
+                    floor_index=to_rows.get(str(bars[bottom]['timestamp'])),
+                    reason=f'통합바닥·1차+{UNIFIED_RISE:.0%}·투매{count}회·거래바닥·1분5선위종가')
+    return dict(route='UNIFIED_WAIT', buy=False, episode=bars[index]['timestamp'], flush_index=flush_index,
+                floor_index=to_rows.get(str(bars[index]['timestamp'])),
+                reason=f'통합바닥·1차+{UNIFIED_RISE:.0%}·투매{count}회·거래바닥·5선 대기(매수직전)')
+
+
 def needs_daily(raw, now):
     rows = completed(raw, now)
     return any(_contiguous(rows[j-5:j+1]) and
@@ -370,7 +486,7 @@ def needs_daily(raw, now):
 
 def sharp_market_entry_allowed(proof):
     """Retain the original sharp-decline short-bullish confirmation for bottom entries."""
-    if proof['route'] != 'BOTTOM_MA5':
+    if proof['route'] not in ('BOTTOM_MA5', 'UNIFIED'):
         return True
     rows, j, k = proof['bars'], proof['flush_index'], proof['floor_index']
     spans = [b['high']-b['low'] for b in rows[max(0,j-5):j] if b['high'] > b['low']]
@@ -387,21 +503,26 @@ def evaluate(raw, *, now, previous_day=None, previous_volume=None, previous_clos
     if not rows:
         return None
     events = waves(rows)
-    result = _breakout(rows, events)
-    if result is None:
-        if previous_day is not None and str(previous_day) < volume5._stamp(now).date().isoformat():
-            result = _floor(rows, events, now, previous_volume)
-    if result is None or not result.get('buy'):
-        # V7612: 기존 경로가 매수 신호를 내지 않을 때만 형 지정 패턴 A/B 를 본다.
+    fresh_day = previous_day is not None and str(previous_day) < volume5._stamp(now).date().isoformat()
+    result = _breakout(rows, events) if BREAKOUT_ENABLED else None      # V7637: 꺼 둠
+    if result is None and FLOOR_ENABLED and fresh_day:                 # V7637: 꺼 둠(통합 경로가 대신)
+        result = _floor(rows, events, now, previous_volume)
+    if PATTERN12_ENABLED and (result is None or not result.get('buy')):
+        # V7612: 기존 경로가 매수 신호를 내지 않을 때만 형 지정 패턴 A/B 를 본다.  V7637: 꺼 둠
         extra = pattern12.evaluate(raw, rows, now=now)
         if extra is not None:
             result = extra
     if result is None or not result.get('buy'):
         # V7622: 다른 경로가 매수 신호를 내지 않을 때만 상승 눌림목 경로를 본다.
-        if previous_day is not None and str(previous_day) < volume5._stamp(now).date().isoformat():
+        if fresh_day:
             extra = _pullback(rows, previous_close)
             if extra is not None:
                 result = extra
+    if (result is None or not result.get('buy')) and fresh_day:
+        # V7637: 통합(투매 2회형 바닥) 경로 — 눌림목과 같은 봉이면 눌림목이 먼저.
+        extra = _unified(rows, previous_close)
+        if extra is not None and (extra['buy'] or result is None):
+            result = extra
     if result is None and events and events[-1]['index'] == len(rows)-1:
         e = events[-1]
         result = dict(route='WAVE', buy=False, episode=rows[e['index']]['timestamp'],

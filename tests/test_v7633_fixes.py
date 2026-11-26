@@ -44,8 +44,10 @@ class V7633DefaultsTests(unittest.TestCase):
         self.assertFalse(P.PULLBACK_REARM)
         self.assertEqual(S.ADD_MIN_GAP, 0.01)
         self.assertTrue(S.SECOND_DRY)
-        r = judge("11:26")                                          # 기본값 = 오늘 실제 매수와 같은 판정
+        with mock.patch.object(P, "BREAKOUT_ENABLED", True):        # V7637: 돌파 경로는 기본 꺼짐 — 켜면 그날 실제 판정 재현
+            r = judge("11:26")                                      # 기본값 = 오늘 실제 매수와 같은 판정
         self.assertEqual((r["route"], r["buy"]), ("BREAKOUT", True))
+        self.assertFalse(P.BREAKOUT_ENABLED)                        # V7637 형 결정: 1차 진입은 눌림목·통합만
 
 
 class V7633BreakoutTests(unittest.TestCase):
