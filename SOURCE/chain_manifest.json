@@ -1,6 +1,6 @@
 {
   "version": "V76.09-FOREGROUND-APP-ACTIVATE-0600-LINK-PAPER",
-  "built_at": "2026-11-26 V7636",
+  "built_at": "2026-11-26 V7637",
   "files": {
     "00_READ_FIRST_V76.md": "a4b0e16dc878862e9d4ed8dae21e7d7026b40801c74403e24a08f3dc04951e91",
     "3_START_V76_GUI.vbs": "bc6fa6922834d8978dd764c25b2620bec5628aad3a7d66cd92174608597eb258",
@@ -80,8 +80,8 @@
     "SOURCE/core/bot_v75_94_multi_admission_paper.py": "f05494490f81701f917ecfaa71e0945ff5b0cd17db685980657bbe3b16fdc982",
     "SOURCE/core/bot_v75_95_complete_locked_paper.py": "b93a206659308070b28b2dc4b539cd7b199054efcbef52731b924f8f43b4fca9",
     "SOURCE/core/bot_v75_9_1_daily_cumulative_volume_log_fix_paper.py": "6a11a73531314539a984343c980b320497a4a554d8b448bfa307eb2449378f0b",
-    "SOURCE/core/bot_v76_00_three_stage_ctrlv_paper.py": "d7dd8e9aaffad817f80831387920db8e45f1af7196471b7b27ced34ed5ff6d33",
-    "SOURCE/core/v7609_prebuy_rules.py": "6bfd8ac76b6f1d08123ddd86a56043bd53a868bf001895869a01986de0b8ef8b",
+    "SOURCE/core/bot_v76_00_three_stage_ctrlv_paper.py": "bebebb708af64ff173d3581f6bee01b8e4a565112703188efb5568bd7dcc7284",
+    "SOURCE/core/v7609_prebuy_rules.py": "2e16bdb87558bc4f52ad19d54c8b26851a09285c501615b2f9bfd1488020b8a4",
     "SOURCE/core/entry_quality_report_v3.py": "24ff4b247051bcc1a31377cf16c493ba8971f5c99cbe6a5580485bb9554ea905",
     "SOURCE/core/entry_quality_tracker.py": "faf7b211feee7060dfcfd4acb78efdb10d46abf9605b78c6b58a7bf7cea8ec8f",
     "SOURCE/core/entry_quality_tracker_v2.py": "5823101237fbb5b997ce593bc1f03dd1d9ef603c06a21d23fe4504744939713b",
@@ -149,10 +149,11 @@
     "tests/test_paper_no_stop.py": "ed4d7099f6d7bd264f740d719db40429b870f9492c698138b7ac7916e70016a9",
     "tests/test_paper_carry_restore.py": "d64ed090ed75e8c1cbdde2ebb770cdf1aca1f412b842d260e677c6c52bc64bbe",
     "tests/test_chart_summary.py": "b10761717efea024ab277f14404b994d520045f20c4a068de5156af0bae66f29",
-    "tests/test_v7633_fixes.py": "d82d6a0673e626d263aa1ffa36579f213844b1d5e6a88b3bb5adf25ed2804f38",
-    "tests/test_v7635_floor_fix.py": "ca8c011b4982bad2c0de29da27e396fef426ecbf3477924995fc01988608aca6",
-    "SOURCE/core/v7636_change_colors.py": "68f2440d9da1107365c3e8a776a713e8c50cabf18174c94b0e9eca69b136335f",
-    "tests/test_v7636_ui.py": "734335c0c50b239873724db69639d5bdcd8a3077e19526909e0f3b285fba0fdd"
+    "tests/test_v7633_fixes.py": "28aa761f75250169d33226be3d3c01919a8efba538ea9c874a4315733b446a65",
+    "tests/test_v7635_floor_fix.py": "b61ea1d48b3d8f08ebc86bbb58631d0af36e7b9a26382c818db96e39d104d916",
+    "SOURCE/core/v7636_change_colors.py": "93eebe1ca66e6630651dfe09b6e51a11bacdc82e4f77eeceec1ef609aa23a33a",
+    "tests/test_v7636_ui.py": "734335c0c50b239873724db69639d5bdcd8a3077e19526909e0f3b285fba0fdd",
+    "tests/test_v7637_unified.py": "3d859d5a3d02ae8dd8d2c061448dafe3ffe9613a322883a1947e6c10f359bc0c"
   },
-  "change_id": "V7636-UI-CHART-COLORS-20261126"
+  "change_id": "V7637-UNIFIED-ENTRY-20261126"
 }

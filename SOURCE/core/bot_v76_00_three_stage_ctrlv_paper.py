@@ -48,8 +48,11 @@ import v7628_query_guard as _QUERY_GUARD
 
 
 VERSION = "V76.09-FOREGROUND-APP-ACTIVATE-0600-LINK-PAPER"
-BUILD_STAMP = "2026-11-26 V7636 화면(차트 십자선 유지·스크롤바·왼쪽끌기 전체보기·1분봉·5/20/60 굵게 · 등락률 빨강/파랑 · 합계칸 크게 · 보류내용 안 잘림) · V7635b 바닥매수 수정"
+BUILD_STAMP = "2026-11-26 V7637 1차매수=눌림목+통합바닥(투매2회·1차+4%·1분5선)·돌파/옛바닥/패턴 끔·급등제외 5일50%/3일30% · V7636 화면(차트 십자선 유지·스크롤바·왼쪽끌기 전체보기·1분봉·5/20/60 굵게 · 등락률 빨강/파랑 · 합계칸 크게 · 보류내용 안 잘림) · V7635b 바닥매수 수정"
 V7609_LEGACY_MA5_ONLY_ENTRY = False
+# V7637 (2026-11-26 형 결정): 옛 3단계 엔진의 '바닥-MA5' 직접 주문 경로도 끈다(1차 진입은 눌림목·통합 두 경로만).
+# 10월 이후 이 경로로 산 적은 없다(모든 1차 매수가 V7609_PREBUY 경로). 화면의 단계 표시는 그대로.
+V7637_LEGACY_BOTTOM_ORDERS = False
 V7609_LEGACY_PRE_MA5_HALF_ENTRY = False
 BASE_DIR = Path(__file__).resolve().parent
 PARENT_FILE = "bot_v75_95_complete_locked_paper.py"
@@ -124,7 +127,7 @@ CARRY_PATTERN = "V76_전일거래바닥이월"
 V7612_ROUTE_SLOT = {"BREAKOUT": 9, _PATTERN12.ROUTE_TAIL: 7, _PATTERN12.ROUTE_CARRY: 8,
                     "PULLBACK": 10}   # V7622 상승 눌림목: 주문 패턴은 기본(PATTERN)·분할매수 관리 그대로
 V7612_SLOT_PATTERN = {9: BREAKOUT_PATTERN, 7: TAIL_PATTERN, 8: CARRY_PATTERN}
-V7612_RELATIVE_STRENGTH_ROUTES = {"BOTTOM_MA5", _PATTERN12.ROUTE_TAIL, _PATTERN12.ROUTE_CARRY}
+V7612_RELATIVE_STRENGTH_ROUTES = {"BOTTOM_MA5", "UNIFIED", _PATTERN12.ROUTE_TAIL, _PATTERN12.ROUTE_CARRY}   # V7637: 통합 바닥도 옛 바닥처럼
 TRANCHE_NOTIONAL = 10_000_000.0 / 2.0
 V7609_FIXED_STOP_LOSS_PCT = 0.015
 V7609_TAKE_PROFIT_PCT = 0.02
@@ -151,6 +154,20 @@ V7630_CARRY_OUTSIDE_BUDGET = True
 # 예) NHN 11/05 51,100 → 11/10 77,400 (+51.5%). 하루 10~20%씩 흔들려 1:3:9 물타기와 맞지 않는다.
 V7621_HOT_DAYS = 3
 V7621_HOT_GAIN = 0.50
+# V7637 (2026-11-26 형 결정): 일봉 급등 제외를 넓힌다 — 최근 5거래일 +50% 이상 또는 최근 3거래일 +30% 이상.
+# (어제 종가 / N거래일 전 종가 - 1. 자동 신규매수·종가배팅 모두. 수동 매수는 그대로.)
+# 재현 참고: 이 조건에 걸리던 날은 과거엔 오히려 수익(현행 거래 A 14건 +25만·B 3건 +10만) — 형이 급등주 꼬리위험 방어로 채택.
+V7637_HOT_RULES = ((5, 0.50), (3, 0.30))
+
+
+def _v7637_hot_hit(closes: list[float]) -> tuple[int, float] | None:
+    """오늘을 뺀 일봉 종가(오래된 → 최근)로 급등 제외에 걸리면 (거래일 수, 상승률), 아니면 None."""
+    for days, limit in V7637_HOT_RULES:
+        if len(closes) >= days + 1 and closes[-1 - days] > 0:
+            gain = closes[-1] / closes[-1 - days] - 1.0
+            if gain >= limit:
+                return days, gain
+    return None
 # V7625 (2026-11-12 형 지시): 거래가 너무 적은 종목은 새로 잡지도, 자동매수하지도 않는다.
 # 주식 수가 아니라 '오늘 누적 거래대금'으로 본다(1,000원짜리 10만주=1억, 50만원짜리 10만주=500억).
 # (시작 시각, 최소 누적 거래대금) — 10시 전에는 적용하지 않는다.
@@ -2443,8 +2460,28 @@ def _v7634_tranche_text(tranches: Any) -> str:
     return " ".join(parts) + f" 합계{total / 1e4:,.1f}만"
 
 
+def _v7637_mix(color: str, target: tuple[int, int, int], weight: float) -> str:
+    rgb = [int(color[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{min(255, round(c * (1 - weight) + t * weight)):02x}" for c, t in zip(rgb, target))
+
+
+def _v7637_row_palette(tree: Any, tag: str, background: str, **options: Any) -> None:
+    """V7637 (형 지시 '진하면 글씨가 안 보이는 점 고려해서 색을 잘 맞춰'): 종목표 줄 색.
+    홀수 줄 = 단계색을 30% 어둡게, 짝수 줄(~z) = 원래 단계색 + 회청색 5%.
+    두 줄의 밝기 차이가 1.3배 이상이라 순번마다 구분되고, 흰 글자 대비 7.6:1 이상,
+    등락률 빨강/파랑(밝은 톤) 글자도 두 줄 모두 4:1 이상으로 잘 보인다."""
+    if not (isinstance(background, str) and background.startswith("#") and len(background) == 7):
+        tree.tag_configure(tag, background=background, **options)
+        return
+    tree.tag_configure(tag, background=_v7637_mix(background, (0, 0, 0), 0.30), **options)
+    light = getattr(tree, "_v7637_light", None)
+    if light is None:
+        light = tree._v7637_light = {}
+    light[tag] = _v7637_mix(background, (0x9f, 0xb3, 0xd1), 0.05)
+
+
 def _v7634_zebra_tag(tree: Any, tag: str) -> str:
-    """V7634: 단계색 태그의 '조금 밝은' 짝 태그를 한 번만 만들어 돌려준다(배경 +10% 흰색 섞기)."""
+    """V7634: 단계색 태그의 짝 태그(짝수 줄용)를 한 번만 만들어 돌려준다. V7637: 색은 _v7637_row_palette."""
     zebra = f"{tag}~z"
     made = getattr(tree, "_v7634_zebra_made", None)
     if made is None:
@@ -2455,14 +2492,13 @@ def _v7634_zebra_tag(tree: Any, tag: str) -> str:
     foreground = str(tree.tag_configure(tag, "foreground") or "")
     if not background.startswith("#") or len(background) != 7:
         return tag
-    rgb = [int(background[i:i + 2], 16) for i in (1, 3, 5)]
-    # V7636 (형 지시 '살짝 더 구분되게 다른 톤으로, 글자는 잘 보이게'): 흰색 10% → 회청색(#9fb3d1) 20% 섞기.
-    #   같은 단계색 계열을 지키면서 한 톤 밝고 차분한 색 → 줄 구분이 뚜렷, 밝은 글자 대비 5:1 이상 유지.
-    tint = (0x9f, 0xb3, 0xd1)
-    light = "#" + "".join(f"{min(255, round(c * 0.80 + t * 0.20)):02x}" for c, t in zip(rgb, tint))
+    light = (getattr(tree, "_v7637_light", None) or {}).get(tag) or _v7637_mix(background, (0x9f, 0xb3, 0xd1), 0.20)
     options = {"background": light}
     if foreground:
         options["foreground"] = foreground
+    font = tree.tag_configure(tag, "font")
+    if font:
+        options["font"] = font
     tree.tag_configure(zebra, **options)
     made.add(zebra)
     return zebra
@@ -3547,19 +3583,11 @@ def _install_gui_fit_and_colors() -> None:
                 root._v7602_stock_trees = trees
             for tag, colors in parent._R21_STAGE_ROW_COLORS.items():
                 background, foreground = colors
-                self.tag_configure(tag, background=background, foreground=foreground)
-            self.tag_configure(
-                "매도종목_수익",
-                background=_V7609_SELL_BODY,
-                foreground=_V7609_SELL_GAIN_TEXT,
-                font=("맑은 고딕", 10, "bold"),
-            )
-            self.tag_configure(
-                "매도종목_손실",
-                background=_V7609_SELL_BODY,
-                foreground=_V7609_SELL_LOSS_TEXT,
-                font=("맑은 고딕", 10, "bold"),
-            )
+                _v7637_row_palette(self, tag, background, foreground=foreground)
+            _v7637_row_palette(self, "매도종목_수익", _V7609_SELL_BODY,
+                               foreground=_V7609_SELL_GAIN_TEXT, font=("맑은 고딕", 10, "bold"))
+            _v7637_row_palette(self, "매도종목_손실", _V7609_SELL_BODY,
+                               foreground=_V7609_SELL_LOSS_TEXT, font=("맑은 고딕", 10, "bold"))
             self.tag_configure("R20_DEPARTED", background="#202a36", foreground="#91a5b8")
         except Exception:
             pass
@@ -4351,8 +4379,8 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
                     state["stale"] += 1
                     continue
                 result = _CBET28.signal(rows)
-                if result is None or _CBET28.hot_gain(rows, V7621_HOT_DAYS) >= V7621_HOT_GAIN:
-                    continue
+                if result is None or _v7637_hot_hit([float(r["c"]) for r in rows[:-1]]) is not None:
+                    continue   # V7637: 종가배팅도 5일 +50%·3일 +30% 급등 제외
                 state["signals"].append({"symbol": code, "name": name, "value": float(value), "rows": rows,
                                          "reason": result["reason"]})
             if state["checked"] >= 10 and state["stale"] == state["checked"]:
@@ -4483,21 +4511,24 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
             return saved[1]
         gain = None
         try:
-            daily = [bar for bar in self.client.get_daily_bars(symbol, limit=V7621_HOT_DAYS + 4)
+            longest = max(days for days, _limit in V7637_HOT_RULES)
+            daily = [bar for bar in self.client.get_daily_bars(symbol, limit=longest + 4)
                      if bar.trading_date < today and float(bar.close) > 0]
             daily.sort(key=lambda bar: bar.trading_date)
             if len(daily) >= V7621_HOT_DAYS + 1:
-                gain = float(daily[-1].close) / float(daily[-1 - V7621_HOT_DAYS].close) - 1.0
+                # V7637: 5일 +50%·3일 +30% 중 걸린 것을 (거래일 수, 상승률)로, 안 걸리면 (0, 3일 상승률)로 둔다.
+                hit = _v7637_hot_hit([float(bar.close) for bar in daily])
+                gain = hit if hit is not None else (0, float(daily[-1].close) / float(daily[-1 - V7621_HOT_DAYS].close) - 1.0)
         except Exception as exc:
             self.logger.warning("V7621 일봉 확인대기 %s | %s (이번엔 급등 판정 없이 진행)", self._label(symbol), type(exc).__name__)
         cache[(symbol, today)] = (time.monotonic(), gain)
         return gain
 
     def _v7621_hot_reason(self, symbol: str) -> str:
-        gain = self._v7621_hot_gain(symbol)
-        if gain is None or gain < V7621_HOT_GAIN:
+        info = self._v7621_hot_gain(symbol)
+        if not isinstance(info, tuple) or not info[0]:
             return ""
-        return f"최근{V7621_HOT_DAYS}일 {gain:+.0%} 급등 제외"
+        return f"최근{info[0]}일 {info[1]:+.0%} 급등 제외"
 
     # ------------------------------------------------------------ V7620 형 지시
     def _v7620_data(self) -> dict[str, Any]:
@@ -8661,12 +8692,12 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
         except Exception as exc:
             self.logger.warning("V7615 1차상승 표시 보류 | %s", type(exc).__name__)
         today = datetime.now(KST).date()
-        for (symbol, day), (_mono, gain) in list(getattr(self, "_v7621_cache", {}).items()):
-            if day != today or gain is None or gain < V7621_HOT_GAIN:
+        for (symbol, day), (_mono, info) in list(getattr(self, "_v7621_cache", {}).items()):
+            if day != today or not isinstance(info, tuple) or not info[0]:
                 continue
             for row in rows:   # 이미 조회된 종목만 표시(화면 경로에서는 새로 조회하지 않음)
                 if str(row.get("symbol", "")).zfill(6) == symbol and str(row.get("stage", "")) not in {"매수종목", "매도종목"}:
-                    tag = f"[최근{V7621_HOT_DAYS}일 {gain:+.0%} 급등 제외] "
+                    tag = f"[최근{info[0]}일 {info[1]:+.0%} 급등 제외] "
                     if not str(row.get("reason", "")).startswith(tag):
                         row["reason"] = tag + str(row.get("reason", ""))
         for row in rows:   # V7625: 이미 목록에 있던 종목이 거래부족이 되면 사유 앞에 표시(자동매수 안 함)
@@ -9519,7 +9550,7 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
                     ),
                     now,
                 )
-                if self._v76_order_bar.get((symbol, 6)) != last_bar_time:
+                if V7637_LEGACY_BOTTOM_ORDERS and self._v76_order_bar.get((symbol, 6)) != last_bar_time:
                     market_ok, market_reason = self._market_gate_v76(
                         stock_bars=today,
                         allow_relative_strength=True,
