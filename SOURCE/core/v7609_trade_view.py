@@ -9,16 +9,37 @@ VISIBLE_ROWS = 10
 HOLD = '매수종목'
 SOLD = '매도종목'
 SOLD_STYLE = 'V7609Sold.V7609Trade.Treeview'   # 글꼴은 V7609Trade를 물려받고 줄 높이만 따로
-MIN_REASON = 150      # V7619: 매도사유 칸 최소 폭(px)
-FIT_PAD = 14          # 글자 폭 + 좌우 여백
+MIN_REASON = 60       # V7619: 매도사유 칸 최소 폭(px) → V7634 60(짧은 사유 이름으로 표시)
+FIT_PAD = 8           # 글자 폭 + 좌우 여백 (V7634 14→8)
 HEADINGS = {'no': ('순번', 44), 'name': ('종목명', 98),
     'buy_date': ('매수일', 76), 'buy_time': ('매수시각', 66), 'buy_price': ('매수가', 67),
     'current_price': ('현재가', 67), 'sell_date': ('매도일', 76),
     'sell_time': ('매도시각', 66), 'sell_price': ('매도가', 67),
     'net_pnl': ('순손익(원)', 90), 'net_pnl_pct': ('순손익률', 72), 'sell_reason': ('매도사유', 152),
-    'quantity': ('수량', 56), 'invested': ('매수금액', 92)}
+    'quantity': ('수량', 56), 'invested': ('매수금액', 92), 'buy_when': ('매수', 92),
+    'net_combo': ('순손익(률)', 120), 'sell_combo': ('매도 시각·가격', 110),
+    'price_combo': ('평단→현재', 110), 'when_combo': ('매수→매도', 100)}
 HOLD_LABELS = {'buy_price': '평단가', 'buy_time': '첫 매수'}   # V7633: 보유표는 평단·첫 매수시각을 보여준다
+SOLD_LABELS = {'buy_price': '평단가', 'sell_reason': '사유'}
 TRANCHE_TAG = 'tranche'   # V7633: 2·3차까지 산 종목 아래에 차수별 수량·금액 줄
+# V7634 (2026-11-26 형 지시): 표 디자인 정리
+#  - 화면에 보이는 칸: 보유 = 순번·종목명·매수·평단가·수량·매수금액·현재가·순손익·순손익률
+#                      매도 = 순번·종목명·매수·평단가·수량·매수금액·매도시각·매도가·순손익·순손익률·매도사유
+#    ('매수' 칸 = 오늘 산 종목은 첫 매수 시각, 이월 종목은 'N일 전 MM/DD')
+#  - 종목마다 색 띠(짝/홀 번갈아): 그 종목의 1·2·3차 줄도 같은 띠 → 묶음이 한눈에 보인다(칸 줄긋기 대신)
+#  - 이월(1거래일 이상 전에 산) 종목은 두 표 모두 호박색 띠
+#  - 본 줄은 굵게, 차수 줄은 연한 글씨
+#  - 실제 목록 폭(약 600px)에 글씨 크기 그대로 다 들어가게: 매수금액은 '만' 단위, 순손익·수익률 한 칸,
+#    매도 시각·가격 한 칸, 매도사유는 짧은 이름(평단+0.5%·목표+2% 등, 누르면 전체)
+HOLD_SHOWN = ('no', 'name', 'buy_when', 'price_combo', 'quantity', 'invested', 'net_combo')
+SOLD_SHOWN = ('no', 'name', 'when_combo', 'buy_price', 'invested', 'net_combo', 'sell_reason')
+BANDS = {   # (짝, 홀) 배경
+    HOLD: {'t': ('#0c4a50', '#083b40'), 'c': ('#4d3712', '#3e2c0e')},
+    '매도종목': {'t': ('#4b1b24', '#3b141c'), 'c': ('#4d3712', '#3e2c0e')},
+}
+TRANCHE_FG = '#b4c6d8'
+CHIP_TODAY = {HOLD: '#0c4a50', '매도종목': '#4b1b24'}
+CHIP_CARRY = '#4d3712'
 
 
 SECTIONS = ('오늘 매수', '전일 매수', '전전일~ 매수')   # V7630: 보유종목을 매수일별 칸으로 나눈다
@@ -41,6 +62,43 @@ def hold_section(buy_date, today):
     if bought >= today:
         return 0
     return 1 if bought >= previous_trading_day(today) else 2
+
+
+def trading_days_between(earlier, later):
+    """두 날짜 사이 거래일 수(주말 제외, 공휴일 구분 안 함). 같은 날=0, 전 거래일=1."""
+    if earlier >= later:
+        return 0
+    days, cursor = 0, earlier
+    while cursor < later:
+        cursor += timedelta(days=1)
+        if cursor.weekday() < 5:
+            days += 1
+    return days
+
+
+def _as_date(text):
+    try:
+        return date.fromisoformat(str(text)[:10])
+    except ValueError:
+        return None
+
+
+def buy_age(row, today):
+    """V7634: 첫 매수가 오늘 기준 몇 거래일 전인지(매도표는 매도일 기준). 모르면 0."""
+    bought = _as_date(row.get('buy_date'))
+    ref = _as_date(row.get('sell_date')) if row.get('stage') == '매도종목' else None
+    if bought is None:
+        return 0
+    return trading_days_between(bought, ref or today)
+
+
+def buy_when_text(row, today):
+    """V7634 '매수' 칸: 오늘 산 종목은 'HH:MM', 이월 종목은 'N일전'(날짜·시각은 바로 아래 차수 줄에)."""
+    age = buy_age(row, today)
+    clock = str(row.get('buy_time') or '')[:5]
+    if age <= 0:
+        return clock or '-'
+    return f"{age}일전"
 
 
 def sectioned(rows, today):
@@ -68,6 +126,19 @@ def row_key(stage, row, index):
 
 
 def display_value(row, key):
+    if key == 'net_combo':   # V7634: '+12,300 (+0.41%)'
+        pnl, pct = row.get('net_pnl'), row.get('net_pnl_pct')
+        if pnl in (None, '') and pct in (None, ''):
+            return '-'
+        text = f'{float(pnl):+,.0f}' if pnl not in (None, '') else '-'
+        return f'{text}  {float(pct):+.2f}%' if pct not in (None, '') else text
+    if key == 'price_combo':  # V7634 보유표: '5,515→5,460'
+        avg, cur = row.get('buy_price'), row.get('current_price')
+        a = f'{float(avg):,.0f}' if avg not in (None, '') else '-'
+        return f'{a}→{float(cur):,.0f}' if cur not in (None, '') else a
+    if key == 'sell_combo':  # V7634: '09:29 30,150'
+        clock, price = str(row.get('sell_time') or '')[:5], row.get('sell_price')
+        return f"{clock or '-'} {float(price):,.0f}" if price not in (None, '') else (clock or '-')
     value = row.get(key)
     if value is None or value == '':
         return '-'
@@ -75,11 +146,19 @@ def display_value(row, key):
         return f'{float(value):+.2f}%'
     if key == 'net_pnl':
         return f'{float(value):+,.0f}'
-    if key in ('quantity', 'invested'):
+    if key == 'quantity':
         return f'{float(value):,.0f}'
+    if key == 'invested':   # V7634: 만 단위(99.9만 · 1,299만)
+        return man(value)
     if key.endswith('price'):
         return f'{float(value):,.0f}'
     return str(value)
+
+
+def man(value):
+    """V7634: 금액을 만 단위로 — 1,000만 이상은 정수(1,299만), 미만은 소수 한 자리(99.9만)."""
+    amount = float(value or 0) / 1e4
+    return f'{amount:,.0f}만' if abs(amount) >= 1000 else f'{amount:,.1f}만'
 
 
 def total_invested(rows):
@@ -106,7 +185,7 @@ def tranche_rows(row):
     return out
 
 
-def tranche_value(fill, key, row):
+def tranche_value(fill, key, row, today=None):
     """차수 줄에 들어갈 글자. 날짜는 첫 매수와 다를 때만 쓴다."""
     stamp = fill['time']
     day, clock = (stamp[:10], stamp[11:19]) if len(stamp) >= 19 else ('', stamp)
@@ -116,13 +195,33 @@ def tranche_value(fill, key, row):
         return day if day and day != str(row.get('buy_date', '')) else ''
     if key == 'buy_time':
         return clock or '-'
+    if key == 'buy_when':   # V7634: 기준일(보유=오늘, 매도=매도일)에 산 차수는 시각만, 그 전이면 'MM/DD HH:MM'
+        ref = str(row.get('sell_date') or '')[:10] if row.get('stage') == '매도종목' else str(today or '')
+        return (clock[:5] or '-') if (not day or not ref or day == ref) else f"{day[5:7]}/{day[8:10]}"   # 전날 차수는 날짜만
     if key == 'buy_price':
         return f"{fill['price']:,.0f}"
     if key == 'quantity':
         return f"{fill['quantity']:,}"
     if key == 'invested':
-        return f"{(fill['notional'] or fill['price'] * fill['quantity']):,.0f}"
+        return man(fill['notional'] or fill['price'] * fill['quantity'])
+    if key == 'price_combo':
+        return f"{fill['price']:,.0f}"
+    if key == 'when_combo':
+        return tranche_value(fill, 'buy_when', row, today)
     return ''
+
+
+def reason_label(text):
+    """V7634: 매도사유 짧은 이름(표 칸용). 원문은 행을 누르면 아래에 전체 표시."""
+    t = str(text)
+    if '평단+0.5' in t or '2차후 평단' in t or '추가 뒤 평단' in t:
+        return '평단+0.5%'
+    if '비용포함+2' in t or '목표+2' in t:
+        return '목표+2%'
+    for key, label in (('손절', '손절'), ('장마감', '장마감'), ('지시', '형 지시'), ('수동', '수동'), ('시초', '시초가')):
+        if key in t:
+            return label
+    return short_reason(t)
 
 
 def short_reason(text):
@@ -184,25 +283,35 @@ class TradeView:
             title = tk.Label(panel, text='보유종목' if stage == HOLD else '오늘 매도',
                 bg=bg, fg=fg, font=('맑은 고딕', 11, 'bold'), pady=3)   # V7633: 7→3
             title.grid(row=0, column=0, columnspan=2, sticky='ew')
-            columns = ('no', 'name', 'buy_date', 'buy_time', 'buy_price')
-            columns += ('quantity', 'invested', 'current_price') if stage == HOLD else ('sell_date', 'sell_time', 'sell_price')
-            columns += ('net_pnl', 'net_pnl_pct')
+            columns = ('no', 'name', 'buy_when', 'buy_date', 'buy_time', 'buy_price', 'quantity', 'invested')
+            columns += ('current_price',) if stage == HOLD else ('sell_date', 'sell_time', 'sell_price')
+            columns += ('net_pnl', 'net_pnl_pct', 'net_combo', 'price_combo')
             if stage == SOLD:
-                columns += ('sell_reason',)
+                columns += ('sell_combo', 'when_combo', 'sell_reason')
             table = ttk.Treeview(panel, columns=columns, show='headings', height=VISIBLE_ROWS,
                 selectmode='browse', style=SOLD_STYLE if stage == SOLD else 'V7609Trade.Treeview')
+            labels = HOLD_LABELS if stage == HOLD else SOLD_LABELS
             for key in columns:
                 label, width = HEADINGS[key]
-                if stage == HOLD:
-                    label = HOLD_LABELS.get(key, label)
-                table.heading(key, text=label)
+                table.heading(key, text=labels.get(key, label))
                 table.column(key, width=width, minwidth=width, stretch=key in ('name', 'sell_reason'),
                     anchor='w' if key in ('name', 'sell_reason') else 'center')
-            table.tag_configure('gain', background=bg, foreground=palettes['gain'])
-            table.tag_configure('loss', background=bg, foreground=palettes['loss'])
-            table.tag_configure('flat', background=bg, foreground=fg)
+            # V7634: 글자색(손익)·글꼴은 손익 태그, 배경은 색 띠 태그가 맡는다(서로 겹치지 않게 나눔)
+            table.tag_configure('gain', foreground=palettes['gain'], font=('맑은 고딕', 11))
+            table.tag_configure('loss', foreground=palettes['loss'], font=('맑은 고딕', 11))
+            table.tag_configure('flat', foreground=fg, font=('맑은 고딕', 11))
             table.tag_configure('section', background='#1f4f7a', foreground='#ffffff', font=('맑은 고딕', 10, 'bold'))
-            table.tag_configure(TRANCHE_TAG, background='#10283f', foreground='#b9d3ea')
+            table.tag_configure(TRANCHE_TAG, foreground=TRANCHE_FG, font=('맑은 고딕', 10))
+            for kind, pair in BANDS[stage].items():
+                for parity, color in zip('ab', pair):
+                    table.tag_configure(f'band_{kind}{parity}', background=color)
+            # V7634: 제목 줄 오른쪽에 색 띠 안내
+            legend = tk.Frame(panel, bg=bg)
+            legend.grid(row=0, column=0, columnspan=2, sticky='e', padx=(0, 6))
+            for text, color in (('오늘 매수', CHIP_TODAY[stage]), ('이월 매수', CHIP_CARRY)):
+                tk.Label(legend, text=f' {text} ', bg=color, fg='#ffffff', font=('맑은 고딕', 9, 'bold'),
+                         highlightthickness=1, highlightbackground='#d9e6f2').pack(side='left', padx=2)
+            tk.Label(legend, text='└ 차수별 매수', bg=bg, fg=TRANCHE_FG, font=('맑은 고딕', 9)).pack(side='left', padx=(4, 0))
             # Every row stays reachable: vertical scroll for count, horizontal for width.
             vertical = ttk.Scrollbar(panel, orient='vertical', command=table.yview)
             horizontal = ttk.Scrollbar(panel, orient='horizontal', command=table.xview)
@@ -216,9 +325,8 @@ class TradeView:
             label.grid(row=3, column=0, columnspan=2, sticky='ew', pady=4)
             self.tables[stage], self.labels[stage], self.row_maps[stage] = table, label, {}
             self.panels[stage], self.hbars[stage] = panel, horizontal
-            if stage == SOLD:
-                # '오늘 매도'의 매도일은 항상 오늘 → 칸을 숨겨 매수일·매도사유가 다 보이게 한다(자료는 그대로).
-                table.configure(displaycolumns=tuple(k for k in columns if k != 'sell_date'))
+            # V7634: 화면에 보일 칸만 고른다(매수일·매수시각·매도일 자료는 그대로 두고 '매수' 칸 하나로 보여 줌)
+            table.configure(displaycolumns=HOLD_SHOWN if stage == HOLD else SOLD_SHOWN)
             table.bind('<<TreeviewSelect>>', lambda e, s=stage: self.select(s))
             table.bind('<Return>', lambda e, s=stage: (self.select(s), 'break')[1])
             table.bind('<MouseWheel>', self.wheel)
@@ -292,7 +400,14 @@ class TradeView:
         if not row:
             return
         if stage == SOLD and row.get('sell_reason'):
-            self.labels[stage].configure(text=f"매도사유: {row.get('sell_reason')}")
+            extra = []   # V7634: 표에서 뺀 매도가·수량·매도시각은 누르면 아래에
+            if row.get('sell_price') not in (None, ''):
+                extra.append(f"매도가 {float(row['sell_price']):,.0f}")
+            if row.get('quantity') not in (None, ''):
+                extra.append(f"{float(row['quantity']):,.0f}주")
+            if row.get('sell_time'):
+                extra.append(f"매도 {row['sell_time']}")
+            self.labels[stage].configure(text=f"매도사유: {row.get('sell_reason')}" + (' · ' + ' · '.join(extra) if extra else ''))
         self.forwarding = True
         try:
             self.gui.choose_category(stage)
@@ -313,40 +428,44 @@ class TradeView:
         if rows == self.last_data:
             return
         self.last_data = [dict(row) for row in rows]
+        today = datetime.now(timezone(timedelta(hours=9))).date()
         for stage, table in self.tables.items():
             matching = [row for row in rows if row.get('stage') == stage]
             self.row_maps[stage] = {}
             retained, order = set(), []
-            if stage == HOLD:
-                today = datetime.now(timezone(timedelta(hours=9))).date()
-                entries = []
-                for number, group in sectioned(matching, today):
+            entries = []
+            groups = sectioned(matching, today) if stage == HOLD else [(None, matching)]
+            for number, group in groups:
+                if number is not None:
                     entries.append((None, number, len(group)))
-                    for row in group:
-                        entries.append((row, number, 0))
-                        fills = tranche_rows(row)
-                        if len(fills) >= 2:   # V7633: 2·3차까지 샀으면 차수별 줄을 바로 아래에
-                            entries += [(row, number, fill) for fill in fills]
-            else:
-                entries = [(row, 0, 0) for row in matching]
+                for row in group:
+                    entries.append((row, number, 0))
+                    fills = tranche_rows(row)
+                    if len(fills) >= 2:   # V7633/V7634: 2·3차까지 샀으면 차수별 줄을 바로 아래에(보유·매도 모두)
+                        entries += [(row, number, fill) for fill in fills]
             index = 0
-            parent_iid = ''
+            parent_iid, band = '', 'band_ta'
             for row, number, size in entries:
                 if row is None:     # 구역 제목 줄(선택해도 아무 동작 없음)
                     iid = f'section|{number}'
-                    values = [f'■ {SECTIONS[number]}' if key == 'name' else (f'{size}종목' if key == 'buy_date' else '')
+                    values = [f'■ {SECTIONS[number]}' if key == 'name' else (f'{size}종목' if key == 'buy_when' else '')
                               for key in table['columns']]
-                    tag = 'section'
+                    tags = ('section',)
                 elif isinstance(size, dict):   # 차수 줄: 고르면 그 종목을 고른 것과 같다
                     iid = f"{parent_iid}|t{size['tranche']}"
-                    values = [tranche_value(size, key, row) for key in table['columns']]
-                    tag = TRANCHE_TAG
+                    values = [tranche_value(size, key, row, today) for key in table['columns']]
+                    tags = (TRANCHE_TAG, band)
                 else:
                     index += 1
-                    values = [str(index) if key == 'no' else display_value(row, key)
+                    values = [str(index) if key == 'no' else
+                              (buy_when_text(row, today) if key == 'buy_when' else
+                               (f"{buy_when_text(row, today)}→{str(row.get('sell_time') or '-')[:5]}" if key == 'when_combo'
+                                else display_value(row, key)))
                               for key in table['columns']]
                     pnl = row.get('net_pnl')
-                    tag = 'flat' if pnl is None or pnl == 0 else ('gain' if pnl > 0 else 'loss')
+                    kind = 'flat' if pnl is None or pnl == 0 else ('gain' if pnl > 0 else 'loss')
+                    band = f"band_{'c' if buy_age(row, today) >= 1 else 't'}{'a' if index % 2 else 'b'}"
+                    tags = (kind, band)
                     iid = row_key(stage, row, index)
                     while iid in retained:
                         iid = f'{iid}#{index}'
@@ -354,9 +473,9 @@ class TradeView:
                 retained.add(iid)
                 order.append(iid)
                 if table.exists(iid):
-                    table.item(iid, values=values, tags=(tag,))
+                    table.item(iid, values=values, tags=tags)
                 else:
-                    table.insert('', 'end', iid=iid, values=values, tags=(tag,))
+                    table.insert('', 'end', iid=iid, values=values, tags=tags)
                 if row is not None:
                     self.row_maps[stage][iid] = row
             for iid in table.get_children():
@@ -364,9 +483,15 @@ class TradeView:
                     table.delete(iid)
             for position, iid in enumerate(order):
                 table.move(iid, '', position)
-            self.labels[stage].configure(
-                text=f'총 {len(matching)}건 · 세로 스크롤로 전체 확인 · 행을 누르면 매도사유 전체 표시'
-                if stage == SOLD else f'총 {len(matching)}건 · 매수금액 합계 {total_invested(matching):,.0f}원 · 세로 스크롤로 전체 확인')
+            carried = sum(buy_age(row, today) >= 1 for row in matching)
+            carry_text = f' (이월 {carried})' if carried else ''
+            if stage == SOLD:
+                pnl_total = sum(float(row.get('net_pnl') or 0) for row in matching)
+                text = (f'총 {len(matching)}건{carry_text} · 매수금액 {total_invested(matching):,.0f}원 · '
+                        f'순손익 {pnl_total:+,.0f}원 · 행을 누르면 매도사유 전체 표시')
+            else:
+                text = f'총 {len(matching)}건{carry_text} · 매수금액 합계 {total_invested(matching):,.0f}원 · 세로 스크롤로 전체 확인'
+            self.labels[stage].configure(text=text)
         self.fit()
         if hasattr(self, 'combined_count'):
             counts = {s: sum(r.get('stage') == s for r in rows) for s in (HOLD, SOLD)}
@@ -416,13 +541,15 @@ class TradeView:
             return
         texts, two_lines = {}, False
         for iid, row in self.row_maps.get(SOLD, {}).items():
-            lines = wrap_text(short_reason(display_value(row, 'sell_reason')), body.measure, room, 2)
+            if table.exists(iid) and table.tag_has(TRANCHE_TAG, iid):
+                texts[iid] = ''     # V7634: 차수 줄에는 매도사유를 쓰지 않는다
+                continue
+            lines = wrap_text(reason_label(display_value(row, 'sell_reason')), body.measure, room, 1)   # V7634: 1줄
             two_lines = two_lines or len(lines) > 1
             texts[iid] = '\n'.join(lines)
         try:
             base = int(ttk.Style(self.root).lookup('V7609Trade.Treeview', 'rowheight') or 34)
-            ttk.Style(self.root).configure(SOLD_STYLE, rowheight=(body.metrics('linespace') * 2 + 10)
-                                           if two_lines else base)
+            ttk.Style(self.root).configure(SOLD_STYLE, rowheight=base)   # V7634: 매도표도 1줄 높이(차수 줄이 길어지지 않게)
         except (tk.TclError, ValueError):
             pass
         for iid, text in texts.items():

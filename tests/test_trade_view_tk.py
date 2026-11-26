@@ -65,8 +65,10 @@ class TradeViewTkTests(unittest.TestCase):
         self.gui.last_gui_rows[1]['net_pnl'] = 10
         self.view.render()
         first, second = sold.get_children()[:2]
-        self.assertEqual(sold.item(first, 'tags'), ('gain',))
-        self.assertEqual(sold.item(second, 'tags'), ('loss',))
+        # V7634: 손익 태그(글자색) + 종목별 색 띠 태그(배경). 첫 태그가 손익.
+        self.assertEqual(sold.item(first, 'tags')[0], 'gain')
+        self.assertEqual(sold.item(second, 'tags')[0], 'loss')
+        self.assertTrue(str(sold.item(first, 'tags')[1]).startswith('band_'))
         self.assertNotEqual(sold.tag_configure('gain')['foreground'], sold.tag_configure('loss')['foreground'])
         sold.yview_moveto(1)
         before = sold.yview()[0]
