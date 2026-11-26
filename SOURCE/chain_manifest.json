@@ -1,6 +1,6 @@
 {
   "version": "V76.09-FOREGROUND-APP-ACTIVATE-0600-LINK-PAPER",
-  "built_at": "2026-11-26 V7635b",
+  "built_at": "2026-11-26 V7636",
   "files": {
     "00_READ_FIRST_V76.md": "a4b0e16dc878862e9d4ed8dae21e7d7026b40801c74403e24a08f3dc04951e91",
     "3_START_V76_GUI.vbs": "bc6fa6922834d8978dd764c25b2620bec5628aad3a7d66cd92174608597eb258",
@@ -80,7 +80,7 @@
     "SOURCE/core/bot_v75_94_multi_admission_paper.py": "f05494490f81701f917ecfaa71e0945ff5b0cd17db685980657bbe3b16fdc982",
     "SOURCE/core/bot_v75_95_complete_locked_paper.py": "b93a206659308070b28b2dc4b539cd7b199054efcbef52731b924f8f43b4fca9",
     "SOURCE/core/bot_v75_9_1_daily_cumulative_volume_log_fix_paper.py": "6a11a73531314539a984343c980b320497a4a554d8b448bfa307eb2449378f0b",
-    "SOURCE/core/bot_v76_00_three_stage_ctrlv_paper.py": "6368d3ffb80d2b99d1687f51af5babc58a8c71f4d7abe02f0c9d1e3185aa0176",
+    "SOURCE/core/bot_v76_00_three_stage_ctrlv_paper.py": "d7dd8e9aaffad817f80831387920db8e45f1af7196471b7b27ced34ed5ff6d33",
     "SOURCE/core/v7609_prebuy_rules.py": "6bfd8ac76b6f1d08123ddd86a56043bd53a868bf001895869a01986de0b8ef8b",
     "SOURCE/core/entry_quality_report_v3.py": "24ff4b247051bcc1a31377cf16c493ba8971f5c99cbe6a5580485bb9554ea905",
     "SOURCE/core/entry_quality_tracker.py": "faf7b211feee7060dfcfd4acb78efdb10d46abf9605b78c6b58a7bf7cea8ec8f",
@@ -103,7 +103,7 @@
     "SOURCE/core/v7600_three_stage_logic.py": "fe3e629de92f63a6f3ea456add519a1ce81a6b69d4bbfd0c24345e50c0aa0e5e",
     "SOURCE/core/v7609_account_guard.py": "a9469e33ef012a2660e6ec363f9a7ecea5b7db294659c701934b6163f2d750f2",
     "SOURCE/core/v7609_exit_policy.py": "a13f763d0024b3999f7990e13aed731dce414f72d90b576e72807d2f241c7a5b",
-    "SOURCE/core/v7609_trade_view.py": "0ddf626296c1f2badc67cd897fb6712eb1324b3f8f272df402ec03dd0deeb8f7",
+    "SOURCE/core/v7609_trade_view.py": "8709e63934bc45afe947a06214881c1e5f40cadf2114d07c13a905d596c552e6",
     "SOURCE/core/v7609_volume_prebuy.py": "e1011a9b960fe381ea62e5bf0204bb7fc9fdc9ed511793e24cc271967214f162",
     "SOURCE/launcher.py": "34a2972fdb889dd801ce744b6ba1c0f6bb647639b4ecc0af300149ce0643f2d4",
     "SPEC.md": "c533c0a9fdd3125f581ed47c0bd2719c340f28a184dc90b16b245c0434063b61",
@@ -142,7 +142,7 @@
     "tests/test_query_rate_guard.py": "2de830febe75b53da068dca78c96191a8301099293dafc2c96fa5e7e50d21424",
     "SOURCE/core/v7612_pattern_rules.py": "fbb5c14bda6b05f6ea7b0dd375eb7d9ac879c13dc95e502a86851ddfde16f6b5",
     "SOURCE/core/v7613_split_rules.py": "9acdb730ca5aa074c8fe81bc1edfde3f936381a8d44f7757b0a4f6fa838bcff5",
-    "SOURCE/core/v7614_chart_panel.py": "d2e4f801d9ee283e5a4082c24d30ad23a74da3815338d86066c8ef200c064644",
+    "SOURCE/core/v7614_chart_panel.py": "329da9deb3adb26ef38a13987a4de8e1fa156069d8a36f343d74e6a10526670e",
     "SOURCE/core/v7619_conservative_rules.py": "f910ab92b36edd72fd16d40c3a679775e6a81d7cbdce28036c7a1f5495ec4d97",
     "SOURCE/core/v7620_command_rules.py": "c0b8033f21108afd1a2a4bbb137681c0dc3432b97fe5cfc02c2a8d06fe87cde5",
     "SOURCE/core/v7628_close_bet_rules.py": "9c6d102ac77a2b29072b16e8c1d9779583e705d09f0910960f8b67cae41889c3",
@@ -150,7 +150,9 @@
     "tests/test_paper_carry_restore.py": "d64ed090ed75e8c1cbdde2ebb770cdf1aca1f412b842d260e677c6c52bc64bbe",
     "tests/test_chart_summary.py": "b10761717efea024ab277f14404b994d520045f20c4a068de5156af0bae66f29",
     "tests/test_v7633_fixes.py": "d82d6a0673e626d263aa1ffa36579f213844b1d5e6a88b3bb5adf25ed2804f38",
-    "tests/test_v7635_floor_fix.py": "ca8c011b4982bad2c0de29da27e396fef426ecbf3477924995fc01988608aca6"
+    "tests/test_v7635_floor_fix.py": "ca8c011b4982bad2c0de29da27e396fef426ecbf3477924995fc01988608aca6",
+    "SOURCE/core/v7636_change_colors.py": "68f2440d9da1107365c3e8a776a713e8c50cabf18174c94b0e9eca69b136335f",
+    "tests/test_v7636_ui.py": "734335c0c50b239873724db69639d5bdcd8a3077e19526909e0f3b285fba0fdd"
   },
-  "change_id": "V7635b-FLOOR-FIX-1BAR-20261126"
+  "change_id": "V7636-UI-CHART-COLORS-20261126"
 }

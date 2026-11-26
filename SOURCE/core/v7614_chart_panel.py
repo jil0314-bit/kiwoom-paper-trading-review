@@ -32,8 +32,13 @@ MINUTE_SCOPE = {"m1": "1", "m3": "3", "m5": "5"}
 PERIOD_API = {"D": ("ka10081", "stk_dt_pole_chart_qry"),
               "W": ("ka10082", "stk_stk_pole_chart_qry"),
               "M": ("ka10083", "stk_mth_pole_chart_qry")}
-DEFAULT_TF = "m3"
+# V7636 (2026-11-26 형 지시): 처음 여는 분봉을 1분봉으로.
+DEFAULT_TF = "m1"
 MA_PERIODS = (5, 10, 20, 30, 60, 120, 200, 360)
+# V7636 (형 지시): 5·20·60 이평선만 2배 굵게(모든 봉). 나머지는 그대로.
+MA_BOLD = {5: 2.0, 20: 2.0, 60: 2.0}
+MA_WIDTH = 1.4
+AXIS_TIME_FONT = 11            # V7636: 시간 눈금 글씨 9 → 11 (+20% 이상)
 MA_COLORS = {5: "#ff5fd2", 10: "#3fc3ff", 20: "#ffd34d", 30: "#5fe07a",
              60: "#ff8a4c", 120: "#b59cff", 200: "#e8e8e8", 360: "#c49a6c"}
 
@@ -64,6 +69,33 @@ def span_slot(plot_w: float, span: int) -> float:
 
 ZOOM_DRAG_MIN_PX = 8      # 이보다 짧은 드래그는 클릭으로 본다
 ZOOM_MIN_BARS = 5
+
+
+def fit_all_span(total: int, plot_w: float) -> int:
+    """V7636: 키움처럼 왼쪽으로 끌면 '전체 보기' — 불러온 봉 전부(화면에 다 들어가는 만큼까지)."""
+    return max(ZOOM_MIN_BARS, min(int(total), int(float(plot_w) / SPAN_SLOT_MIN)))
+
+
+def scroll_fractions(start: int, end: int, total: int) -> tuple[float, float]:
+    """V7636: 가로 스크롤바 위치 — 지금 보이는 구간(start~end)이 전체 봉 중 어디인지."""
+    if total <= 0:
+        return 0.0, 1.0
+    return max(0.0, start / total), min(1.0, end / total)
+
+
+def offset_for_fraction(first: float, count: int, total: int) -> int:
+    """V7636: 스크롤바를 끌어 놓은 위치(왼쪽 끝 비율) → 오른쪽 끝에서 밀린 봉 수."""
+    start = int(round(float(first) * total))
+    start = max(0, min(max(0, total - count), start))
+    return max(0, total - count - start)
+
+
+def appended_bars(old: list[dict[str, Any]], new: list[dict[str, Any]]) -> int:
+    """V7636: 갱신으로 오른쪽에 새로 붙은 봉 수(과거를 보고 있을 때 화면이 밀리지 않게 offset 에 더한다)."""
+    if not old or not new:
+        return 0
+    last = old[-1].get("t")
+    return sum(1 for bar in new if bar.get("t") is not None and last is not None and bar["t"] > last)
 
 
 def zoom_window(left: int | None, right: int | None, total: int) -> tuple[int, int] | None:
@@ -355,6 +387,7 @@ class ChartPanel(tk.Frame if tk is not None else object):
         self._debounce: Any = None
         self._refresh_job: Any = None
         self._drag_x: int | None = None
+        self._cross_xy: tuple[int, int] | None = None   # V7636: 마지막 마우스 위치(갱신 뒤 십자선 다시 그림)
         self._results: "queue.Queue[tuple]" = queue.Queue()
         self._pending: tuple | None = None
         self._pending_lock = threading.Lock()
@@ -413,15 +446,21 @@ class ChartPanel(tk.Frame if tk is not None else object):
         self.info_var = tk.StringVar(value="")
         tk.Label(self, textvariable=self.info_var, bg=BG, fg=TEXT, font=(self.font, 10, "bold"),
                  anchor="w", takefocus=0).pack(fill="x", padx=6)
+        # V7636 (형 지시): 지나간 시간대를 볼 수 있게 차트 아래 가로 스크롤바.
+        self.hscroll = tk.Scrollbar(self, orient="horizontal", command=self._on_scrollbar, takefocus=0,
+                                    width=16, bg="#1d3d5c", troughcolor=PANEL_BG, activebackground="#2f7bd6",
+                                    highlightthickness=0, bd=0, relief="flat")
+        self.hscroll.pack(side="bottom", fill="x", padx=(4, 78), pady=(0, 3))
         self.canvas = tk.Canvas(self, bg=BG, highlightthickness=0, takefocus=0, cursor="crosshair")
-        self.canvas.pack(fill="both", expand=True, padx=(4, 2), pady=(0, 4))
+        self.canvas.pack(fill="both", expand=True, padx=(4, 2), pady=(0, 2))
         self.canvas.bind("<Configure>", lambda _e: self.redraw())
         self.canvas.bind("<Motion>", self._on_motion)
-        self.canvas.bind("<Leave>", lambda _e: self._clear_cross())
+        self.canvas.bind("<Leave>", lambda _e: self._clear_cross(forget=True))
         self.canvas.bind("<MouseWheel>", self._on_wheel)
         self.canvas.bind("<Button-4>", lambda e: self._zoom(+1))
         self.canvas.bind("<Button-5>", lambda e: self._zoom(-1))
         # V7630: 왼쪽 드래그 = 구간 선택 확대(수집기 차트와 같은 방식), 오른쪽 드래그 = 과거/최근으로 밀기
+        # V7636: 왼쪽 버튼으로 '왼쪽(←)으로' 끌면 키움처럼 전체가 한 화면에 압축돼 보인다.
         self.canvas.bind("<ButtonPress-1>", self._on_select_press)
         self.canvas.bind("<B1-Motion>", self._on_select_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_select_release)
@@ -584,6 +623,9 @@ class ChartPanel(tk.Frame if tk is not None else object):
                 self.loading = False
                 self.error = error
                 if not error:
+                    if self.offset > 0 and self.symbol == symbol:
+                        # V7636: 과거 구간을 보는 중이면 새 봉이 붙어도 보던 자리가 그대로 남게 한다.
+                        self.offset += appended_bars(self.bars, bars)
                     self.bars = bars
                     closes = [b["c"] for b in bars]
                     self.mas = moving_averages(closes)
@@ -622,6 +664,22 @@ class ChartPanel(tk.Frame if tk is not None else object):
         self.offset = max(0, min(max(0, len(self.bars) - 10), self.offset + bars))
         self.redraw()
 
+    def _on_scrollbar(self, *args: Any) -> None:
+        """V7636: 가로 스크롤바 — 끌기(moveto)·화살표(scroll units)·빈칸 클릭(scroll pages)."""
+        layout = self._layout
+        if not self.bars or not layout or not layout.get("view"):
+            return
+        total, count = len(self.bars), len(layout["view"])
+        try:
+            if args[0] == "moveto":
+                self.offset = offset_for_fraction(float(args[1]), count, total)
+                self.redraw()
+            elif args[0] == "scroll":
+                step = int(args[1]) * (max(1, count // 2) if str(args[2]).startswith("page") else max(1, count // 20))
+                self._scroll(-step)
+        except (IndexError, ValueError):
+            pass
+
     def _on_press(self, event: Any) -> None:
         self._drag_x = event.x
 
@@ -657,13 +715,24 @@ class ChartPanel(tk.Frame if tk is not None else object):
         x = max(0, min(layout["plot_w"], event.x))
         self.canvas.delete("zoomsel")
         top, bottom = layout["panels"]["price"][0], layout["height"] - layout["bottom_h"]
+        if x < start - ZOOM_DRAG_MIN_PX:   # V7636: 왼쪽으로 끄는 중 = 전체 보기(압축)
+            self.canvas.create_rectangle(x, top, start, bottom, fill="#ffb347", stipple="gray12",
+                                         outline="#ffcf87", width=1, tags="zoomsel")
+            self.canvas.create_text((x + start) / 2, top + 14, text="◀ 놓으면 전체 보기", fill="#ffe2b8",
+                                    font=(self.font, 11, "bold"), tags="zoomsel")
+            return
         self.canvas.create_rectangle(min(start, x), top, max(start, x), bottom, fill="#3d8bfd", stipple="gray25",
                                      outline="#9cc7ff", width=1, tags="zoomsel")
 
     def _on_select_release(self, event: Any) -> None:
         start, self._select_x = getattr(self, "_select_x", None), None
         self.canvas.delete("zoomsel")
-        if start is not None and self._layout and abs(event.x - start) >= ZOOM_DRAG_MIN_PX:
+        if start is not None and self._layout and self.bars and start - event.x >= ZOOM_DRAG_MIN_PX:
+            # V7636: 왼쪽으로 끌어 놓으면 불러온 봉 전체를 한 화면에(더블클릭 = 원래 구간으로)
+            self.span, self.offset = fit_all_span(len(self.bars), self._layout["plot_w"]), 0
+            self._paint_tf_buttons()
+            self.redraw()
+        elif start is not None and self._layout and abs(event.x - start) >= ZOOM_DRAG_MIN_PX:
             picked = zoom_window(self._index_at(min(start, event.x)), self._index_at(max(start, event.x)), len(self.bars))
             if picked is not None:
                 self.span, self.offset = picked
@@ -687,7 +756,7 @@ class ChartPanel(tk.Frame if tk is not None else object):
         width, height = int(canvas.winfo_width()), int(canvas.winfo_height())
         if width < 120 or height < 120:
             return
-        axis_w, bottom_h = 74, 22
+        axis_w, bottom_h = 74, 26     # V7636: 시간 글씨를 키운 만큼 아래 여백 22 → 26
         plot_w = width - axis_w - 4
         if self.span is not None:
             self.slot = span_slot(plot_w, self.span)
@@ -697,6 +766,10 @@ class ChartPanel(tk.Frame if tk is not None else object):
             canvas.create_text(width / 2, height / 2, text=message, fill=AXIS_TEXT,
                                font=(self.font, 12), justify="center")
             self._layout = {}
+            try:
+                self.hscroll.set(0.0, 1.0)
+            except Exception:
+                pass
             return
         count = self.span if self.span is not None else max(5, int(plot_w // self.slot))
         end = len(self.bars) - self.offset
@@ -772,12 +845,12 @@ class ChartPanel(tk.Frame if tk is not None else object):
                 value = series[i] if i < len(series) else None
                 if value is None or not (lo <= value <= hi):
                     if len(segment) >= 4:
-                        canvas.create_line(*segment, fill=MA_COLORS[period], width=1.4)
+                        canvas.create_line(*segment, fill=MA_COLORS[period], width=MA_BOLD.get(period, MA_WIDTH))
                     segment = []
                     continue
                 segment += [x_of(i), y_of(value)]
             if len(segment) >= 4:
-                canvas.create_line(*segment, fill=MA_COLORS[period], width=1.4)
+                canvas.create_line(*segment, fill=MA_COLORS[period], width=MA_BOLD.get(period, MA_WIDTH))
 
         # 보유 평단·목표·손절선
         for key, color, label in (("avg", "#ffd34d", "평단"), ("target", UP, "목표"), ("stop", DOWN, "손절")):
@@ -845,14 +918,20 @@ class ChartPanel(tk.Frame if tk is not None else object):
                 if last_day is None or moment.year != last_day.year:
                     label = moment.strftime("%Y")
                 last_day = moment.date()
-            if label and x - last_label_x > 56 and x > 24:
+            if label and x - last_label_x > 66 and x > 28:
                 canvas.create_line(x, panels["price"][0], x, height - bottom_h, fill=GRID, dash=(1, 6))
                 canvas.create_text(x, height - bottom_h + 4, text=label, anchor="n", fill=AXIS_TEXT,
-                                   font=(self.font, 9))
+                                   font=(self.font, AXIS_TIME_FONT))
                 last_label_x = x
         self._layout = {"x_of": x_of, "y_of": y_of, "view": view, "end": end, "plot_w": plot_w,
                         "panels": panels, "lo": lo, "hi": hi, "height": height, "bottom_h": bottom_h}
         self._update_info(end - 1)
+        try:
+            self.hscroll.set(*scroll_fractions(start, end, len(self.bars)))
+        except Exception:
+            pass
+        if self._cross_xy is not None:     # V7636: 자동 갱신(10초마다)으로 다시 그려도 십자선 유지
+            self._draw_cross(*self._cross_xy)
 
     @staticmethod
     def _short(value: float) -> str:
@@ -886,32 +965,48 @@ class ChartPanel(tk.Frame if tk is not None else object):
             value = series[index] if index < len(series) else None
             label.configure(text=f"{period}:{won(value)}" if value else f"{period}")
 
-    def _clear_cross(self) -> None:
+    def _clear_cross(self, forget: bool = False) -> None:
+        if forget:
+            self._cross_xy = None
         self.canvas.delete("cross")
         if self._layout:
             self._update_info(self._layout["end"] - 1)
 
     def _on_motion(self, event: Any) -> None:
+        self._cross_xy = (int(event.x), int(event.y))
+        self._draw_cross(event.x, event.y)
+
+    def _draw_cross(self, ex: float, ey: float) -> None:
+        """V7636: 십자선 — 마우스가 차트 위에 있는 동안 갱신이 와도 사라지지 않게, 시간 상자도 아래에 표시."""
         layout = self._layout
         if not layout:
             return
         self.canvas.delete("cross")
         plot_w = layout["plot_w"]
-        if event.x > plot_w:
+        if ex > plot_w:
             return
         end = layout["end"]
-        index = end - 1 - int((plot_w - event.x) // max(SPAN_SLOT_MIN, self.slot))
+        index = end - 1 - int((plot_w - ex) // max(SPAN_SLOT_MIN, self.slot))
         if index not in layout["view"]:
             return
         x = layout["x_of"](index)
-        self.canvas.create_line(x, layout["panels"]["price"][0], x, layout["height"] - layout["bottom_h"],
+        axis_y = layout["height"] - layout["bottom_h"]
+        self.canvas.create_line(x, layout["panels"]["price"][0], x, axis_y,
                                 fill=CROSS, dash=(3, 3), tags="cross")
         p_top, p_bot = layout["panels"]["price"]
-        if p_top <= event.y <= p_bot:
-            self.canvas.create_line(0, event.y, plot_w, event.y, fill=CROSS, dash=(3, 3), tags="cross")
-            price = layout["lo"] + (p_bot - event.y) / (p_bot - p_top) * (layout["hi"] - layout["lo"])
-            self.canvas.create_rectangle(plot_w + 1, event.y - 9, plot_w + 73, event.y + 9, fill="#2b4560",
+        if p_top <= ey <= p_bot:
+            self.canvas.create_line(0, ey, plot_w, ey, fill=CROSS, dash=(3, 3), tags="cross")
+            price = layout["lo"] + (p_bot - ey) / (p_bot - p_top) * (layout["hi"] - layout["lo"])
+            self.canvas.create_rectangle(plot_w + 1, ey - 9, plot_w + 73, ey + 9, fill="#2b4560",
                                          outline="#2b4560", tags="cross")
-            self.canvas.create_text(plot_w + 6, event.y, text=won(price), anchor="w", fill="white",
+            self.canvas.create_text(plot_w + 6, ey, text=won(price), anchor="w", fill="white",
                                     font=(self.font, 9, "bold"), tags="cross")
+        moment = self.bars[index]["t"]
+        stamp = moment.strftime("%m/%d %H:%M" if self.tf in MINUTE_SCOPE else "%Y/%m/%d")
+        half = 50 if self.tf in MINUTE_SCOPE else 46
+        left = max(0, min(plot_w - 2 * half, x - half))
+        self.canvas.create_rectangle(left, axis_y + 1, left + 2 * half, layout["height"] - 1, fill="#2b4560",
+                                     outline="#5b7fa3", tags="cross")
+        self.canvas.create_text(left + half, axis_y + 3, text=stamp, anchor="n", fill="white",
+                                font=(self.font, AXIS_TIME_FONT, "bold"), tags="cross")
         self._update_info(index)
