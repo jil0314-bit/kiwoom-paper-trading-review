@@ -18,6 +18,19 @@ WAVE_FIRST_ANYTIME = True
 #    재현(바닥매수 경로, 1:3:9 분할 운용, 2026-07~11 466종목일):
 #      현행 182건 +992만 · 11시 이후만 적용 324건 +1,065만(10시대 신호가 약함) · 10시 이후만 적용 220건 +1,384만
 FLOOR_PREV_VOLUME_FROM = time(10)
+# V7635 (2026-11-26 에이치브이엠 10:34 오매수 수정, 형 지시: 1분봉 5선 '안착' 기준)
+#   그날 10:16 대량음봉 → 10:17 거래바닥(저가 59,800) 뒤 10:32에 57,800까지 바닥이 깨졌는데도
+#   ① 옛 바닥을 계속 유효로 보고 ② 14분 전 10:19 양봉을 '반전'으로 재사용하고
+#   ③ 종가가 1분 MA5보다 20원 높은 '걸침' 한 봉을 'MA5회복'으로 통과시켜 10:33 봉에 매수했다.
+# 1) 바닥 이탈 무효: 거래바닥 봉 이후 저가가 (대량음봉·거래바닥 봉 중 낮은 저가) 아래로 내려가면
+#    그 바닥 신호는 버리고 새 대량음봉부터 다시 찾는다. 1~2호가 살짝 밑꼬리(쌍바닥)는 허용하도록
+#    FLOOR_BREAK_TOL 만큼 더 내려가야 '이탈'로 본다 (에이치브이엠: 10:18 59,500은 허용, 10:28 59,000부터 이탈).
+FLOOR_BREAK_RESET = True
+FLOOR_BREAK_TOL = 0.01
+# 2) 반전은 '마지막 저점' 이후에 나온 봉만 인정 (바닥 직후 반전이 한 번 켜지면 계속 켜져 있던 문제).
+FLOOR_REVERSAL_AFTER_LOW = True
+# 3) 5선 안착 = 1분봉 종가가 1분 MA5(직전 5개 종가 평균) 위에 연속 N봉 (직전봉 + 현재봉).
+FLOOR_MA5_SETTLE_BARS = 2
 
 # V7622 (2026-11-11 형 지시·재현시험 반영): 상승 눌림목 경로(큰 음봉 없이도 매수)
 #   1차 상승: 고가가 min(전일종가, 장중저점) 대비 +5% 이상 (09:00 이후 정규장 봉만)
@@ -163,21 +176,37 @@ def _floor(rows, events, now, previous_volume):
                     or b['volume'] > median(prior)*.55 or b['volume'] > min(prior)):
                 continue
             # Reversal must follow the floor, not precede it.
+            # V7635-1: 바닥이 깨지면 이 대량음봉·거래바닥 묶음은 무효 → 더 앞의 음봉을 본다.
+            if FLOOR_BREAK_RESET and k+1 < len(rows) and \
+                    min(r['low'] for r in rows[k+1:]) < min(f['low'], b['low']) * (1 - FLOOR_BREAK_TOL):
+                break
             spans = [r['high']-r['low'] for r in rows[max(0,j-5):j] if r['high'] > r['low']]
             reference = median(spans) if spans else f['high']-f['low']
             reversal = False
-            for r in rows[k+1:]:
+            start = k+1
+            if FLOOR_REVERSAL_AFTER_LOW:
+                # V7635-2: 거래바닥 이후 가장 최근 저점(같은 저가면 나중 봉) 다음/그 봉부터만 반전 인정.
+                lows = [r['low'] for r in rows[k:]]
+                last_low = k + max(i for i, v in enumerate(lows) if v == min(lows))
+                start = max(k+1, last_low)
+            for r in rows[start:]:
                 span, body = r['high']-r['low'], abs(r['close']-r['open'])
                 wick = min(r['close'],r['open'])-r['low']
                 reversal |= (r['close'] > r['open'] or
                     (span > 0 and wick >= body*1.5 and wick >= span*.35) or
                     (span > 0 and body <= span*.35 and span <= reference*.65))
-            buy = reversal and _above_ma(rows, len(rows)-1, (5,))
+            buy = reversal and _ma5_settled(rows, FLOOR_MA5_SETTLE_BARS)
             return dict(route='BOTTOM_MA5' if buy else 'FLOOR', buy=buy,
                         episode=rows[k]['timestamp'], flush_index=j, floor_index=k,
                         reason='대량하락음봉3배·' + ('전일전체거래2배' if volume5._stamp(f['timestamp']).time() >= FLOOR_PREV_VOLUME_FROM else '10시전(전일2배면제)') + '·거래바닥35%/55%' +
-                               ('·바닥이후반전·MA5회복' if buy else '·매수직전'))
+                               ('·바닥이후반전·5선안착' if buy else '·매수직전'))
     return None
+
+
+def _ma5_settled(rows, bars=FLOOR_MA5_SETTLE_BARS):
+    """V7635-3: 마지막 `bars`개 1분봉의 종가가 모두 각자의 1분 MA5(그 봉 포함 5개 종가 평균) 이상."""
+    last = len(rows) - 1
+    return all(_above_ma(rows, last - n, (5,)) for n in range(max(1, int(bars))))
 
 
 def _breakout(rows, events):

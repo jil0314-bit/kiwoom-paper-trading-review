@@ -1,6 +1,6 @@
 {
   "version": "V76.09-FOREGROUND-APP-ACTIVATE-0600-LINK-PAPER",
-  "built_at": "2026-11-26 V7634",
+  "built_at": "2026-11-26 V7635",
   "files": {
     "00_READ_FIRST_V76.md": "a4b0e16dc878862e9d4ed8dae21e7d7026b40801c74403e24a08f3dc04951e91",
     "3_START_V76_GUI.vbs": "bc6fa6922834d8978dd764c25b2620bec5628aad3a7d66cd92174608597eb258",
@@ -80,8 +80,8 @@
     "SOURCE/core/bot_v75_94_multi_admission_paper.py": "f05494490f81701f917ecfaa71e0945ff5b0cd17db685980657bbe3b16fdc982",
     "SOURCE/core/bot_v75_95_complete_locked_paper.py": "b93a206659308070b28b2dc4b539cd7b199054efcbef52731b924f8f43b4fca9",
     "SOURCE/core/bot_v75_9_1_daily_cumulative_volume_log_fix_paper.py": "6a11a73531314539a984343c980b320497a4a554d8b448bfa307eb2449378f0b",
-    "SOURCE/core/bot_v76_00_three_stage_ctrlv_paper.py": "74dbd9140d0f20d9a0cfcff70d88f8d17db7522e478eee22863c68b299ca86bb",
-    "SOURCE/core/v7609_prebuy_rules.py": "de2b8eb7bd5bf12c257f61a693326924197443ddca8cf9ebdd76469cee12627d",
+    "SOURCE/core/bot_v76_00_three_stage_ctrlv_paper.py": "3bafbe46f1f35ff5182084684d09caa1429a0e631854708e9f31ea1e1146c691",
+    "SOURCE/core/v7609_prebuy_rules.py": "79d33774625609974082d9f045e05371a0890fe446f57b03a8d3e540d775eaf6",
     "SOURCE/core/entry_quality_report_v3.py": "24ff4b247051bcc1a31377cf16c493ba8971f5c99cbe6a5580485bb9554ea905",
     "SOURCE/core/entry_quality_tracker.py": "faf7b211feee7060dfcfd4acb78efdb10d46abf9605b78c6b58a7bf7cea8ec8f",
     "SOURCE/core/entry_quality_tracker_v2.py": "5823101237fbb5b997ce593bc1f03dd1d9ef603c06a21d23fe4504744939713b",
@@ -149,7 +149,8 @@
     "tests/test_paper_no_stop.py": "ed4d7099f6d7bd264f740d719db40429b870f9492c698138b7ac7916e70016a9",
     "tests/test_paper_carry_restore.py": "d64ed090ed75e8c1cbdde2ebb770cdf1aca1f412b842d260e677c6c52bc64bbe",
     "tests/test_chart_summary.py": "b10761717efea024ab277f14404b994d520045f20c4a068de5156af0bae66f29",
-    "tests/test_v7633_fixes.py": "d82d6a0673e626d263aa1ffa36579f213844b1d5e6a88b3bb5adf25ed2804f38"
+    "tests/test_v7633_fixes.py": "d82d6a0673e626d263aa1ffa36579f213844b1d5e6a88b3bb5adf25ed2804f38",
+    "tests/test_v7635_floor_fix.py": "2bc55ddc3917c8eddee999427555e8100defd4968ed8b453cf5854a90a404f1f"
   },
-  "change_id": "V7634-TABLE-REDESIGN-20261126"
+  "change_id": "V7635-FLOOR-FIX-20261126"
 }
