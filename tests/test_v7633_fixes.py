@@ -119,11 +119,72 @@ class V7633TrancheRowTests(unittest.TestCase):
         self.assertEqual(V.tranche_value(fills[2], "name", row), "   └ 3차")
         self.assertEqual(V.tranche_value(fills[2], "buy_time", row), "13:49:03")
         self.assertEqual(V.tranche_value(fills[2], "quantity", row), "1,642")
-        self.assertEqual(V.tranche_value(fills[2], "invested", row), "8,998,160")
+        self.assertEqual(V.tranche_value(fills[2], "invested", row), "899.8만")   # V7634 만 단위
         self.assertEqual(V.tranche_value(fills[2], "buy_date", row), "")       # 같은 날이면 날짜 생략
         self.assertEqual(V.total_invested([row, dict(invested=885000)]), 13877980)
-        self.assertEqual(V.display_value(row, "invested"), "12,992,980")
+        self.assertEqual(V.display_value(row, "invested"), "1,299만")
+
+    def test_v7634_age_when_and_labels(self):
+        try:
+            import v7609_trade_view as V
+        except ImportError:
+            self.skipTest("tkinter 없음")
+        from datetime import date
+        today = date(2026, 11, 26)                                             # 목요일
+        self.assertEqual(V.trading_days_between(date(2026, 11, 20), today), 4) # 금 → 목 (주말 제외)
+        hold = dict(stage="매수종목", buy_date="2026-11-25", buy_time="11:27:04")
+        self.assertEqual(V.buy_age(hold, today), 1)
+        self.assertEqual(V.buy_when_text(hold, today), "1일전")
+        self.assertEqual(V.buy_when_text(dict(stage="매수종목", buy_date="2026-11-26", buy_time="09:41:12"), today), "09:41")
+        sold = dict(stage="매도종목", buy_date="2026-11-20", sell_date="2026-11-26", sell_time="09:16:42",
+                    net_pnl=74300, net_pnl_pct=0.57, buy_price=26378, current_price=26600)
+        self.assertEqual(V.buy_age(sold, today), 4)
+        self.assertEqual(V.display_value(sold, "net_combo"), "+74,300  +0.57%")
+        self.assertEqual(V.display_value(dict(buy_price=5515, current_price=5460), "price_combo"), "5,515→5,460")
+        fill = dict(tranche=3, time="2026-11-23T10:09:00+09:00", price=25700, quantity=350, notional=8995000)
+        self.assertEqual(V.tranche_value(fill, "buy_when", sold, today), "11/23")  # 전날 차수는 날짜
+        self.assertEqual(V.man(998580), "99.9만")
+        self.assertEqual(V.man(12977900), "1,298만")
+        self.assertEqual(V.reason_label("예약목표 2차후 평단+0.5%"), "평단+0.5%")
+        self.assertEqual(V.reason_label("예약목표 비용포함+2.0%"), "목표+2%")
 
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0]], verbosity=1)
+
+
+class V7634SaleTrancheTests(unittest.TestCase):
+    """매도 1건마다 그 보유분의 매수 차수(이월분 포함)를 PAPER 체결장부에서 다시 묶는다."""
+
+    def test_carried_three_tranches_then_sell(self):
+        import ast, csv as _csv, tempfile, types
+        from typing import Any
+        core = Path(__file__).resolve().parents[1] / "SOURCE" / "core"
+        tree = ast.parse((core / "bot_v76_00_three_stage_ctrlv_paper.py").read_text(encoding="utf-8-sig"))
+        wanted = {"_v7634_sale_tranches", "_v7609_timestamp", "_v7634_tranche_text"}
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "paper_fills.csv"
+            rows = [("2026-11-20T12:53:00+09:00", "BUY", 35, 28350), ("2026-11-20T13:24:00+09:00", "BUY", 107, 27950),
+                    ("2026-11-23T10:09:00+09:00", "BUY", 350, 25700), ("2026-11-26T09:16:42+09:00", "SELL", 492, 26600),
+                    ("2026-11-26T09:30:00+09:00", "BUY", 10, 26000), ("2026-11-26T09:40:00+09:00", "SELL", 10, 26500)]
+            with path.open("w", encoding="utf-8", newline="") as handle:
+                writer = _csv.writer(handle)
+                writer.writerow(["timestamp", "symbol", "side", "quantity", "price"])
+                for stamp, side, qty, price in rows:
+                    writer.writerow([stamp, "003495", side, qty, price])
+            ns = dict(datetime=datetime, timedelta=timedelta, Path=Path, csv=_csv, Any=Any, KST=KST,
+                      _V753=types.SimpleNamespace(FILL_FILE=str(path)))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef) and node.name in wanted:
+                    node.decorator_list = []
+                    exec(compile(ast.Module([node], []), "<v7634>", "exec"), ns)
+            fake = type("Fake", (), {"_v7609_timestamp": staticmethod(ns["_v7609_timestamp"]),
+                                     "_v7634_sale_tranches": ns["_v7634_sale_tranches"]})()
+            out = fake._v7634_sale_tranches(datetime(2026, 11, 26, 15, 0, tzinfo=KST))
+        first = out[("003495", "2026-11-26T09:16:42")]
+        self.assertEqual([t["quantity"] for t in first], [35, 107, 350])          # 11/20·11/20·11/23 이월 3차
+        self.assertEqual(sum(t["notional"] for t in first), 12977900)
+        self.assertEqual(len(out[("003495", "2026-11-26T09:40:00")]), 1)           # 매도 뒤 새로 산 1차만
+        text = ns["_v7634_tranche_text"](first)
+        self.assertTrue(text.startswith("①28,350×35=99.2만 ②27,950×107=299.1만 ③25,700×350=899.5만"), text)
+        self.assertTrue(text.endswith("합계1,297.8만"), text)

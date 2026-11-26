@@ -1,6 +1,6 @@
 {
   "version": "V76.09-FOREGROUND-APP-ACTIVATE-0600-LINK-PAPER",
-  "built_at": "2026-11-26 V7633c",
+  "built_at": "2026-11-26 V7634",
   "files": {
     "00_READ_FIRST_V76.md": "a4b0e16dc878862e9d4ed8dae21e7d7026b40801c74403e24a08f3dc04951e91",
     "3_START_V76_GUI.vbs": "bc6fa6922834d8978dd764c25b2620bec5628aad3a7d66cd92174608597eb258",
@@ -80,7 +80,7 @@
     "SOURCE/core/bot_v75_94_multi_admission_paper.py": "f05494490f81701f917ecfaa71e0945ff5b0cd17db685980657bbe3b16fdc982",
     "SOURCE/core/bot_v75_95_complete_locked_paper.py": "b93a206659308070b28b2dc4b539cd7b199054efcbef52731b924f8f43b4fca9",
     "SOURCE/core/bot_v75_9_1_daily_cumulative_volume_log_fix_paper.py": "6a11a73531314539a984343c980b320497a4a554d8b448bfa307eb2449378f0b",
-    "SOURCE/core/bot_v76_00_three_stage_ctrlv_paper.py": "ff7c20efb21ce3bd0d46295f75673688563032af4df944561e9418fe44685696",
+    "SOURCE/core/bot_v76_00_three_stage_ctrlv_paper.py": "74dbd9140d0f20d9a0cfcff70d88f8d17db7522e478eee22863c68b299ca86bb",
     "SOURCE/core/v7609_prebuy_rules.py": "de2b8eb7bd5bf12c257f61a693326924197443ddca8cf9ebdd76469cee12627d",
     "SOURCE/core/entry_quality_report_v3.py": "24ff4b247051bcc1a31377cf16c493ba8971f5c99cbe6a5580485bb9554ea905",
     "SOURCE/core/entry_quality_tracker.py": "faf7b211feee7060dfcfd4acb78efdb10d46abf9605b78c6b58a7bf7cea8ec8f",
@@ -103,7 +103,7 @@
     "SOURCE/core/v7600_three_stage_logic.py": "fe3e629de92f63a6f3ea456add519a1ce81a6b69d4bbfd0c24345e50c0aa0e5e",
     "SOURCE/core/v7609_account_guard.py": "a9469e33ef012a2660e6ec363f9a7ecea5b7db294659c701934b6163f2d750f2",
     "SOURCE/core/v7609_exit_policy.py": "a13f763d0024b3999f7990e13aed731dce414f72d90b576e72807d2f241c7a5b",
-    "SOURCE/core/v7609_trade_view.py": "856982be7ea77748e7267594208eb1134a7519e5d411c40e7c6489d0533404ec",
+    "SOURCE/core/v7609_trade_view.py": "0ddf626296c1f2badc67cd897fb6712eb1324b3f8f272df402ec03dd0deeb8f7",
     "SOURCE/core/v7609_volume_prebuy.py": "e1011a9b960fe381ea62e5bf0204bb7fc9fdc9ed511793e24cc271967214f162",
     "SOURCE/launcher.py": "34a2972fdb889dd801ce744b6ba1c0f6bb647639b4ecc0af300149ce0643f2d4",
     "SPEC.md": "c533c0a9fdd3125f581ed47c0bd2719c340f28a184dc90b16b245c0434063b61",
@@ -128,7 +128,7 @@
     "tests/test_state_invariants.py": "74f2aad38c2a9b3216163bbfb22ea307de491fbfeb27864ddb1a80ac94100e76",
     "tests/test_state_manager.py": "61633b0759332b33c49b02f50173dbb270ec738669828314a430236e98ccfcc8",
     "tests/test_support_exit.py": "f3bf185eeb63af1c4a0ece88a5430070bf5aafc65389a66f08cd0c16e4be3584",
-    "tests/test_trade_view_tk.py": "cb518ab251e8ed4578383cf7a0201e172eff6b9d8d8eff20e800234ac4f05a1c",
+    "tests/test_trade_view_tk.py": "bd59a4229d69f7a54235a00edb732101a2c0d6c3f47020c722a5b6fe3f0e5acf",
     "tests/test_volume_prebuy.py": "e0a44e22245948f814e082d843d935a8589d7fee6e2101f1deac04206f7ff5aa",
     "tests/test_volume_prebuy_engine.py": "ec47cbaca0ab6229210b5266e538dfe7b4adf21216742dbd8f5bd8c5473059f3",
     "SOURCE/core/v7609_observation.py": "176f7a9cd8d18863ecadaa57f654a4b549d738f0adc5cf53844ea19040c6bbed",
@@ -149,7 +149,7 @@
     "tests/test_paper_no_stop.py": "ed4d7099f6d7bd264f740d719db40429b870f9492c698138b7ac7916e70016a9",
     "tests/test_paper_carry_restore.py": "d64ed090ed75e8c1cbdde2ebb770cdf1aca1f412b842d260e677c6c52bc64bbe",
     "tests/test_chart_summary.py": "b10761717efea024ab277f14404b994d520045f20c4a068de5156af0bae66f29",
-    "tests/test_v7633_fixes.py": "8d8e23d01889eda761404a73230351f3fa9953d464dc34db1b30447ca7d7d0e4"
+    "tests/test_v7633_fixes.py": "d82d6a0673e626d263aa1ffa36579f213844b1d5e6a88b3bb5adf25ed2804f38"
   },
-  "change_id": "V7633c-SUMMARY-CARD-15PCT-20261126"
+  "change_id": "V7634-TABLE-REDESIGN-20261126"
 }

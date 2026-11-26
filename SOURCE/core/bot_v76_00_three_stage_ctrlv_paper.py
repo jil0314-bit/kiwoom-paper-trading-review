@@ -48,7 +48,7 @@ import v7628_query_guard as _QUERY_GUARD
 
 
 VERSION = "V76.09-FOREGROUND-APP-ACTIVATE-0600-LINK-PAPER"
-BUILD_STAMP = "2026-11-26 V7633c 분할 1:2:6·추가매수 1% 간격·차수별 수량·금액·화면 정리(합계칸 +15%)"
+BUILD_STAMP = "2026-11-26 V7634 매수·매도표 새 디자인(종목별 색 띠·이월 표시·매도 차수별 금액)·분할 1:2:6·추가매수 1% 간격"
 V7609_LEGACY_MA5_ONLY_ENTRY = False
 V7609_LEGACY_PRE_MA5_HALF_ENTRY = False
 BASE_DIR = Path(__file__).resolve().parent
@@ -2427,10 +2427,48 @@ V7620_ACTION_TEXT = {
 V7620_HINT = "예) 5% 수익나면 팔아 · 지금 손절해 · 지금 사 · 빼 · 10,000원에 매수 · 오늘 장 약하다 · 테마 강하다 에코프로"
 
 
+def _v7634_tranche_text(tranches: Any) -> str:
+    """V7634: 종목리스트 2줄 칸용 차수 요약 — '①5,610×178=99.9만 ②… 합계1,299.3만' (2차 이상일 때만)."""
+    items = [t for t in (tranches or []) if isinstance(t, dict)]
+    if len(items) < 2:
+        return ""
+    parts, total = [], 0.0
+    for i, t in enumerate(items):
+        price, qty = float(t.get("price", 0) or 0), int(t.get("quantity", 0) or 0)
+        amount = float(t.get("notional", 0) or 0) or price * qty
+        total += amount
+        mark = "①②③④⑤⑥⑦⑧⑨"[min(8, max(0, int(t.get('tranche', i + 1) or i + 1) - 1))]
+        parts.append(f"{mark}{price:,.0f}×{qty:,}={amount / 1e4:,.1f}만")
+    return " ".join(parts) + f" 합계{total / 1e4:,.1f}만"
+
+
+def _v7634_zebra_tag(tree: Any, tag: str) -> str:
+    """V7634: 단계색 태그의 '조금 밝은' 짝 태그를 한 번만 만들어 돌려준다(배경 +10% 흰색 섞기)."""
+    zebra = f"{tag}~z"
+    made = getattr(tree, "_v7634_zebra_made", None)
+    if made is None:
+        made = tree._v7634_zebra_made = set()
+    if zebra in made:
+        return zebra
+    background = str(tree.tag_configure(tag, "background") or "")
+    foreground = str(tree.tag_configure(tag, "foreground") or "")
+    if not background.startswith("#") or len(background) != 7:
+        return tag
+    rgb = [int(background[i:i + 2], 16) for i in (1, 3, 5)]
+    light = "#" + "".join(f"{min(255, int(c + (255 - c) * 0.10)):02x}" for c in rgb)
+    options = {"background": light}
+    if foreground:
+        options["foreground"] = foreground
+    tree.tag_configure(zebra, **options)
+    made.add(zebra)
+    return zebra
+
+
 def _v7633_compact_header(root: Any) -> None:
     """V7633 (2026-11-25 형 지시): 표·차트 위 머리 부분(제목·단계카드·합계카드)을 약 30% 줄인다.
     글씨 크기는 그대로(60대 가독성) — 여백을 줄이고, 카드 아래 작은 설명줄을 빼고, 합계카드는 이름·값을 한 줄로."""
     import tkinter as tk
+    import tkinter.font as tkfont
     from tkinter import ttk
     summary_names = {"보유합계", "평가손익", "실현손익(오늘)", "총손익", "가용현금"}
     pending = list(root.winfo_children())
@@ -2455,7 +2493,13 @@ def _v7633_compact_header(root: Any) -> None:
                 for child in card.winfo_children():
                     if child is band or not isinstance(child, tk.Label):
                         continue
-                    if str(child.cget("textvariable") or ""):
+                    # V7634: 글자 크기로 구분한다. 04 카드는 건수를 textvariable 없이 글자로 써서(보유 N · 매도 M)
+                    #        예전처럼 textvariable 유무로 고르면 건수 칸이 숨겨졌다(11/26 형 지적).
+                    try:
+                        size = abs(int(tkfont.Font(root=root, font=child.cget("font")).actual("size")))
+                    except Exception:
+                        size = 99
+                    if size >= 12:
                         child.configure(pady=0)                       # 건수(큰 글씨) 그대로
                     elif child.winfo_manager() == "pack":
                         child.pack_forget()                           # '거래량 유입·초기 포착' 같은 작은 설명줄
@@ -3613,6 +3657,13 @@ def _install_gui_fit_and_colors() -> None:
         if stage_tags is not None:
             # The locked parent still greys arrow-containing prose in insert.
             # Restore only this row's actual-stage tag after that formatter.
+            # V7634 (형 지시 '순번마다 줄'): 짝수 번째 줄은 같은 단계색을 조금 밝힌 '~z' 태그로 → 줄마다 띠가 생긴다.
+            #   (표 위젯은 칸 테두리를 못 그린다. 태그를 읽는 코드는 없음을 확인 — 색 표시 전용)
+            try:
+                if parent_iid in ("", None) and len(self.get_children("")) % 2 == 0:
+                    stage_tags = (_v7634_zebra_tag(self, stage_tags[0]),)
+            except Exception:
+                pass
             self.item(result, tags=stage_tags)
         return result
 
@@ -6994,6 +7045,45 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
             return records
         return records
 
+    def _v7634_sale_tranches(self, now: datetime) -> dict[tuple[str, str], list[dict[str, Any]]]:
+        """V7634: 오늘 매도마다 그 보유분을 만든 매수 체결(1·2·3차, 이월분 포함)을 PAPER 체결장부에서 찾는다.
+        열쇠 = (종목, 매도시각 'YYYY-MM-DDTHH:MM:SS'). 화면 표시 전용, 주문·장부 변경 없음."""
+        out: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        path = Path(getattr(_V753, "FILL_FILE", ""))
+        if not path.exists():
+            return out
+        events: dict[str, list[tuple[datetime, str, int, float]]] = {}
+        oldest = now - timedelta(days=21)
+        try:
+            with path.open("r", encoding="utf-8-sig", newline="") as handle:
+                for raw in csv.DictReader(handle):
+                    side = str(raw.get("side", "")).strip().upper()
+                    if side not in {"BUY", "SELL"}:
+                        continue
+                    stamp = self._v7609_timestamp(raw.get("timestamp"), now)
+                    if stamp is None or stamp < oldest:
+                        continue
+                    symbol = str(raw.get("symbol", "")).strip().zfill(6)
+                    events.setdefault(symbol, []).append(
+                        (stamp, side, int(float(raw.get("quantity", 0) or 0)), float(raw.get("price", 0.0) or 0.0)))
+        except (OSError, ValueError, TypeError, csv.Error):
+            return out
+        for symbol, items in events.items():
+            buys: list[dict[str, Any]] = []
+            held = 0
+            for stamp, side, qty, price in sorted(items, key=lambda item: item[0]):
+                if side == "BUY":
+                    buys.append(dict(tranche=len(buys) + 1, time=stamp.isoformat(), price=price,
+                                     quantity=qty, notional=price * qty))
+                    held += qty
+                    continue
+                if stamp.date() == now.date():
+                    out[(symbol, stamp.strftime("%Y-%m-%dT%H:%M:%S"))] = [dict(b) for b in buys]
+                held -= qty
+                if held <= 0:
+                    buys, held = [], 0
+        return out
+
     @staticmethod
     def _v7609_pnl_badge(pnl: float, pnl_pct: float) -> str:
         """Make the P/L direction unmistakable in the narrow sold-row detail."""
@@ -7575,6 +7665,9 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
                     if average_price > 0:
                         detail += f" · 현재평단 {average_price:,.0f}원"
                     reason = f"체결기록[{detail}] · {reason}"
+                tranche_text = _v7634_tranche_text(tranche_fills)
+                if tranche_text:   # V7634: 종목리스트 2줄 칸 맨 앞에 1·2·3차 가격·수량·금액
+                    reason = f"{tranche_text} · {reason}"
 
             elif stage == "매도종목":
                 sell_stamp = fill.get("sell_time")
@@ -7650,6 +7743,11 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
             row.pop("_v7609_rank", None)
         # Sold rows are fill EVENTS, not a last-per-symbol current-state list.
         templates = {r['symbol']: r for r in final_rows if r.get('stage') == '매도종목'}
+        try:
+            sale_tranches = self._v7634_sale_tranches(now)
+        except Exception as exc:   # 화면 보조 정보 — 실패해도 매도 줄은 그대로 보인다
+            self.logger.warning("V7634 매도 차수 표시 보류 | %s", type(exc).__name__)
+            sale_tranches = {}
         for symbol, fill in fills.items():
             sales = fill.get('sales', [])
             if not sales:
@@ -7670,6 +7768,20 @@ class V7600ThreeStageEngine(_PARENT_ENGINE):
                     net_pnl_pct=sale['sell_pnl_pct']*100,
                     sell_reason=self._v7609_sell_reason_label(sale.get('sell_reason', '')))
                 row['reason'] = self._v7609_pnl_badge(sale['sell_pnl'], sale['sell_pnl_pct'])+' · '+row['sell_reason']
+                # V7634: 이 매도분의 1·2·3차 매수(이월분 포함) → 평단·수량·매수금액·첫 매수일
+                tranches = sale_tranches.get((symbol, sold.strftime('%Y-%m-%dT%H:%M:%S')), [])
+                if tranches:
+                    quantity = sum(int(t['quantity']) for t in tranches)
+                    invested = sum(float(t['notional']) for t in tranches)
+                    first = self._v7609_timestamp(tranches[0]['time'], now)
+                    row.update(tranche_fills=tranches, quantity=quantity, invested=invested,
+                               buy_price=invested / quantity if quantity else row.get('buy_price'))
+                    if first is not None:
+                        row.update(buy_date=first.strftime('%Y-%m-%d'), buy_time=first.strftime('%H:%M:%S'))
+                    tranche_text = _v7634_tranche_text(tranches)
+                    if tranche_text:
+                        row['reason'] = (self._v7609_pnl_badge(sale['sell_pnl'], sale['sell_pnl_pct'])
+                                         + ' · ' + tranche_text + ' · ' + row['sell_reason'])
                 final_rows.append(row)
         active = {r.get('symbol') for r in final_rows}
         for symbol, candidate in list(getattr(self, '_v7609_early_observation', {}).items()):
