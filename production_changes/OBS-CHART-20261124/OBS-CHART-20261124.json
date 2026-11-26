@@ -1,0 +1,23 @@
+{
+  "build": "OBS-CHART-20261124",
+  "tests": {
+    "run": 69,
+    "passed": 69
+  },
+  "files": {
+    "SOURCE/core/v7595_r21_hwpx_logic.py": {
+      "before": "9f6879ce50d05a42785d2785b2680cd01d50d10662969037363165ff7206729c",
+      "after": "857bb88640b07ba4a4ea79b76ea3a4609801d84187d75e498201e688f2d9da09"
+    },
+    "SOURCE/core/bot_v76_00_three_stage_ctrlv_paper.py": {
+      "before": "82b72bf9728c6b6938b2eb7e3bd2befb4ae97e9e298081dc886120ea054901b0",
+      "after": "84222eb9946c0e5f5c42a21bc45f06705c95cbc45a54f7a02583c4be41693e68"
+    },
+    "tests/test_observation_first_rise.py": {
+      "before": "c559aa5d0a0492cb36ed664c2cf3e161106e593e705b0fec25949ada496943eb",
+      "after": "ac4abe170b236681bb9d10a6086370f7dafd9b0f789cd4db890281033b02f014"
+    }
+  },
+  "scope": "New observation admission only: no past-wave bypass. Existing stages retained. Chart share 45 to 54 percent. Stop, carry, orders, Kiwoom unchanged.",
+  "unverified": "Running dashboard reload, live chart appearance and live Kiwoom interaction are not verified by unit tests."
+}

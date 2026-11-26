@@ -1,0 +1,264 @@
+--- a/SOURCE/core/bot_v76_00_three_stage_ctrlv_paper.py
++++ b/SOURCE/core/bot_v76_00_three_stage_ctrlv_paper.py
+@@ -159,7 +159,7 @@
+                          (dt_time(10, 0), 1_000_000_000.0))
+ # V7614 (2026-11-09): 오른쪽 설명판 자리에 0600식 차트. 화면 전용(주문·장부·연동 경로 불변).
+ V7614_TABLE_FONT = ("맑은 고딕", 11)
+-V7614_TABLE_PANE, V7614_CHART_PANE = 46, 54
++V7614_TABLE_PANE, V7614_CHART_PANE = 379, 621  # 37.9% / 62.1%; chart width +15%
+ _V7614_ENGINE: dict[str, Any] = {}
+ # V7616 (2026-11-09): 우리 패턴 매수 경로에서는 지수 '하락주의(CAUTION)·회복대기(RECOVERY_WAIT)'에 막히지 않는다.
+ # 근거: 11/9 매수신호 17회 중 대부분이 지수 1분 -0.15% 잔흔들림 보류로 무산(지수 일 +1.5% 상승일).
+@@ -2379,6 +2379,27 @@
+             "stop": float(getattr(position, "stop_price", 0) or 0)}
+ 
+ 
++def _v7614_quote_summary(symbol: str) -> dict[str, Any]:
++    """Read existing engine data only; never request data or change trading state."""
++    engine = _V7614_ENGINE.get("engine")
++    symbol = str(symbol).zfill(6)
++    now = datetime.now(KST)
++    quote = getattr(engine, "latest_quotes", {}).get(symbol)
++    stamp = getattr(quote, "timestamp", None)
++    if (not isinstance(stamp, datetime) or stamp.tzinfo is None
++            or stamp.astimezone(KST).date() != now.date()
++            or str(getattr(quote, "symbol", "")).zfill(6) != symbol):
++        return {}
++    result = {"change_pct": getattr(quote, "change_pct", None),
++              "volume": getattr(quote, "cumulative_volume", None), "timestamp": stamp}
++    saved = getattr(engine, "_v7609_prebuy_daily_cache", {}).get((symbol, now.date()))
++    if saved and saved[1]:
++        previous = saved[1]
++        if str(previous[0]) < now.date().isoformat():
++            result["previous_volume"] = previous[1]
++    return result
++
++
+ def _v7614_api_code(symbol: str, client: Any) -> str:
+     base = _V753.base_symbol(str(symbol))
+     return _V753.api_symbol(base, str(getattr(getattr(client, "settings", None), "suffix", "") or ""))
+@@ -2858,7 +2879,8 @@
+ 
+     fetcher = _CHART14.ChartFetcher(
+         lambda: getattr(_V7614_ENGINE.get("engine"), "client", None), _v7614_api_code)
+-    chart = _CHART14.ChartPanel(right, fetcher=fetcher, overlay_getter=_v7614_overlay, focus_return=focus_table)
++    chart = _CHART14.ChartPanel(right, fetcher=fetcher, overlay_getter=_v7614_overlay,
++                              summary_getter=_v7614_quote_summary, focus_return=focus_table)
+     chart.pack(fill="both", expand=True)
+     root._v7614_chart = chart
+     pane.bind("<ButtonRelease-1>", lambda _e, p=pane: setattr(p, "_v7614_user_sash", True), add="+")
+@@ -3085,7 +3107,7 @@
+                             widget.pane(panes[1], weight=V7614_CHART_PANE)
+                             width = int(widget.winfo_width() or 0)
+                             if width > 100 and not getattr(widget, "_v7614_user_sash", False):
+-                                widget.sashpos(0, int(width * V7614_TABLE_PANE / 100))
++                                widget.sashpos(0, int(width * V7614_TABLE_PANE / (V7614_TABLE_PANE + V7614_CHART_PANE)))
+             except Exception:
+                 pass
+             try:
+--- a/SOURCE/core/v7614_chart_panel.py
++++ b/SOURCE/core/v7614_chart_panel.py
+@@ -205,6 +205,30 @@
+     if value < 0:
+         return f"▼-{text}"
+     return text
++
++
++def format_market_summary(values: dict[str, Any], now: datetime) -> tuple[str, str]:
++    """Today's cumulative volume versus the entire previous trading day, not same-time volume."""
++    def number(key: str, minimum: float | None = None) -> float | None:
++        try:
++            value = float(values[key])
++            return value if math.isfinite(value) and (minimum is None or value >= minimum) else None
++        except (KeyError, TypeError, ValueError, OverflowError):
++            return None
++    stamp = values.get("timestamp")
++    if (not isinstance(stamp, datetime) or stamp.tzinfo is None
++            or stamp.astimezone(KST).date() != now.astimezone(KST).date()
++            or (now - stamp).total_seconds() < -5):
++        return "전일比 미확인 · 거래량 미확인 · 전일전체 대비 미확인", AXIS_TEXT
++    change, volume, previous = number("change_pct"), number("volume", 0), number("previous_volume", 0)
++    change_text = f"{signed(change, 2)}%" if change is not None else "미확인"
++    volume_text = f"{volume:,.0f}주" if volume is not None else "미확인"
++    ratio = volume / previous * 100 if volume is not None and previous else None
++    ratio_text = f"{ratio:,.1f}%" if ratio is not None else "미확인"
++    delay = " · 시세지연" if (now - stamp).total_seconds() > 30 else ""
++    color = UP if change is not None and change > 0 else DOWN if change is not None and change < 0 else FLAT
++    return (f"전일比 {change_text} · 거래량 {volume_text} · 전일전체 대비 {ratio_text}"
++            f" · {stamp.astimezone(KST):%H:%M:%S}{delay}"), color
+ 
+ 
+ def nice_step(span: float, count: int) -> float:
+@@ -304,11 +328,14 @@
+ class ChartPanel(tk.Frame if tk is not None else object):
+     def __init__(self, master: Any, *, fetcher: ChartFetcher,
+                  overlay_getter: Callable[[str], dict[str, float]] | None = None,
++                 summary_getter: Callable[[str], dict[str, Any]] | None = None,
+                  focus_return: Callable[[], None] | None = None,
+                  font_family: str = "맑은 고딕") -> None:
+         super().__init__(master, bg=BG, highlightthickness=0, takefocus=0)
+         self.fetcher = fetcher
+         self.overlay_getter = overlay_getter
++        self.summary_getter = summary_getter
++        self._summary_updated = 0.0
+         self.focus_return = focus_return
+         self.font = font_family
+         self.symbol = ""
+@@ -345,17 +372,22 @@
+         self.title_var = tk.StringVar(value="종목을 선택하면 차트가 표시됩니다")
+         tk.Label(top, textvariable=self.title_var, bg=BG, fg=TEXT, font=(self.font, 13, "bold"),
+                  anchor="w", takefocus=0).pack(side="left")
++        self.summary_var = tk.StringVar(value="")
++        self.summary_label = tk.Label(top, textvariable=self.summary_var, bg=BG, fg=TEXT,
++                                     font=(self.font, 10, "bold"), anchor="w", justify="left", takefocus=0)
++        self.summary_label.pack(side="left", fill="x", expand=True, padx=(10, 0))
++        self.summary_label.bind("<Configure>", lambda e: self.summary_label.configure(wraplength=max(100, e.width)))
+         self.tf_buttons: dict[str, Any] = {}
+-        box = tk.Frame(top, bg=BG, takefocus=0)
+-        box.pack(side="right")
++        span_row = tk.Frame(self, bg=BG, takefocus=0)
++        span_row.pack(fill="x", padx=6, pady=(0, 2))
++        box = tk.Frame(span_row, bg=BG, takefocus=0)
++        box.pack(side="left")
+         for label, tf in TIMEFRAMES:
+             button = tk.Label(box, text=label, bg="#12304d", fg=TEXT, font=(self.font, 11, "bold"),
+                               padx=9, pady=2, cursor="hand2", takefocus=0, relief="flat", bd=0)
+             button.pack(side="left", padx=2)
+             button.bind("<Button-1>", lambda _e, chosen=tf: self.set_timeframe(chosen))
+             self.tf_buttons[tf] = button
+-        span_row = tk.Frame(self, bg=BG, takefocus=0)
+-        span_row.pack(fill="x", padx=6, pady=(0, 2))
+         span_box = tk.Frame(span_row, bg=BG, takefocus=0)
+         span_box.pack(side="right")
+         tk.Label(span_box, text="최근", bg=BG, fg=AXIS_TEXT, font=(self.font, 9), takefocus=0).pack(side="left", padx=(0, 2))
+@@ -473,6 +505,19 @@
+         label = dict((v, k) for k, v in TIMEFRAMES).get(self.tf, self.tf)
+         if self.symbol:
+             self.title_var.set(f"{self.name} {self.symbol} · {label}봉")
++            self._update_summary()
++
++    def _update_summary(self) -> None:
++        values = {}
++        if self.summary_getter is not None and self.symbol:
++            try:
++                values = self.summary_getter(self.symbol) or {}
++            except Exception:
++                pass  # Display failure must never stop chart or trading updates.
++        text, color = format_market_summary(values, datetime.now(KST))
++        self.summary_var.set(text if self.symbol else "")
++        self.summary_label.configure(fg=color)
++        self._summary_updated = time.monotonic()
+ 
+     def _request_load(self, *, force: bool = False) -> None:
+         self._debounce = None
+@@ -529,6 +574,8 @@
+     def _poll_results(self) -> None:
+         if self._closed:
+             return
++        if time.monotonic() - self._summary_updated >= 1.0:
++            self._update_summary()
+         try:
+             while True:
+                 token, symbol, tf, bars, foreign, inst, error, note = self._results.get_nowait()
+--- /dev/null
++++ b/tests/test_chart_summary.py
+@@ -0,0 +1,99 @@
++"""Read-only header data, day boundaries and missing data; no network or engine startup."""
++import ast
++from datetime import datetime, timedelta
++from pathlib import Path
++from types import SimpleNamespace
++import sys
++import unittest
++from unittest.mock import Mock
++
++CORE = Path(__file__).resolve().parents[1] / 'SOURCE/core'
++sys.path.insert(0, str(CORE))
++import v7614_chart_panel as chart
++
++NOW = datetime(2026, 11, 25, 10, 30, tzinfo=chart.KST)
++
++
++class HeaderTests(unittest.TestCase):
++    def values(self, **kw):
++        return dict(dict(change_pct=2.5, volume=1500, previous_volume=1000, timestamp=NOW), **kw)
++
++    def test_ratio_is_percent_of_whole_previous_day(self):
++        text, color = chart.format_market_summary(self.values(), NOW)
++        self.assertIn('▲+2.50%', text)
++        self.assertIn('1,500주', text)
++        self.assertIn('전일전체 대비 150.0%', text)
++        self.assertEqual(color, chart.UP)
++
++    def test_down_flat_and_zero_volume(self):
++        text, color = chart.format_market_summary(self.values(change_pct=-1.2, volume=0), NOW)
++        self.assertIn('▼-1.20%', text)
++        self.assertIn('0.0%', text)
++        self.assertEqual(color, chart.DOWN)
++        self.assertEqual(chart.format_market_summary(self.values(change_pct=0), NOW)[1], chart.FLAT)
++
++    def test_missing_or_zero_previous_volume_is_not_zero_percent(self):
++        for previous in (None, 0, -1, float('nan'), float('inf')):
++            text, _ = chart.format_market_summary(self.values(previous_volume=previous), NOW)
++            self.assertIn('전일전체 대비 미확인', text)
++
++    def test_invalid_current_numbers_are_unknown(self):
++        text, _ = chart.format_market_summary(self.values(change_pct=float('nan'), volume=-10), NOW)
++        self.assertIn('전일比 미확인', text)
++        self.assertIn('거래량 미확인', text)
++
++    def test_old_day_future_and_missing_stamp(self):
++        for stamp in (None, NOW.replace(tzinfo=None), NOW-timedelta(days=1), NOW+timedelta(minutes=1)):
++            text, _ = chart.format_market_summary(self.values(timestamp=stamp), NOW)
++            self.assertNotIn('1,500', text)
++            self.assertIn('미확인', text)
++
++    def test_delayed_data_keeps_its_actual_timestamp(self):
++        text, _ = chart.format_market_summary(self.values(timestamp=NOW-timedelta(seconds=40)), NOW)
++        self.assertIn('시세지연', text)
++        self.assertIn('10:29:20', text)
++
++    def reader(self, quote, prior=None):
++        engine = SimpleNamespace(latest_quotes={'005930': quote},
++            _v7609_prebuy_daily_cache={('005930', NOW.date()): (NOW, prior)}, client=Mock())
++        class Clock(datetime):
++            @classmethod
++            def now(cls, tz=None):
++                return NOW
++        source = ast.parse((CORE/'bot_v76_00_three_stage_ctrlv_paper.py').read_text(encoding='utf-8-sig'))
++        method = next(n for n in source.body if isinstance(n, ast.FunctionDef) and n.name == '_v7614_quote_summary')
++        ns = {'Any': object, 'datetime': Clock, 'KST': chart.KST, '_V7614_ENGINE': {'engine': engine}}
++        # Use a Clock instance because the function checks datetime type.
++        if quote is not None and isinstance(quote.timestamp, datetime):
++            quote.timestamp = Clock.fromisoformat(quote.timestamp.isoformat())
++        exec(compile(ast.Module(body=[method], type_ignores=[]), '<actual-header-reader>', 'exec'), ns)
++        result = ns[method.name]('005930')
++        self.assertEqual(engine.client.mock_calls, [])
++        return result
++
++    def test_reader_uses_only_existing_today_caches(self):
++        quote = SimpleNamespace(symbol='005930', timestamp=NOW, change_pct=2.5, cumulative_volume=1500)
++        result = self.reader(quote, ('2026-11-24', 1000, 60000))
++        self.assertEqual(result['previous_volume'], 1000)
++        self.assertEqual(result['volume'], 1500)
++
++    def test_reader_rejects_wrong_symbol_and_previous_day_quote(self):
++        for symbol, stamp in (('000660', NOW), ('005930', NOW-timedelta(days=1))):
++            self.assertEqual(self.reader(SimpleNamespace(symbol=symbol, timestamp=stamp)), {})
++
++    def test_reader_missing_prior_does_not_invent_a_ratio(self):
++        quote = SimpleNamespace(symbol='005930', timestamp=NOW, change_pct=0, cumulative_volume=0)
++        self.assertNotIn('previous_volume', self.reader(quote))
++
++    def test_symbol_switch_and_getter_error_cannot_retain_previous_stock(self):
++        panel = SimpleNamespace(symbol='005930', summary_getter=lambda s: self.values(),
++            summary_var=Mock(), summary_label=Mock())
++        chart.ChartPanel._update_summary(panel)
++        panel.symbol = '000660'
++        panel.summary_getter = Mock(side_effect=RuntimeError('missing'))
++        chart.ChartPanel._update_summary(panel)
++        self.assertIn('미확인', panel.summary_var.set.call_args.args[0])
++
++
++if __name__ == '__main__':
++    unittest.main()
